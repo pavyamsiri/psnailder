@@ -656,6 +656,7 @@ class SpiralFitter:
                 converged = best_model is not None
                 if best_model is None:
                     best_model = initial_model
+                    best_samples = flat_samples
                 break
             best_quality = quality
             background = new_background
