@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 __all__: Final[Sequence[str]] = [
     "AlinderModel",
     "SpiralFitDiagnostics",
-    "SpiralFitIteration",
     "SpiralFitter",
     "generate_initial_background",
 ]
@@ -66,35 +65,6 @@ type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
 
 
 @dataclass
-class SpiralFitIteration:
-    """Data yielded per iteration of the spiral fitting algorithm.
-
-    Attributes
-    ----------
-    initial_model : AlinderModel
-        The initial model.
-    current_model : AlinderModel
-        The current model.
-    data : Array2D[f64]
-        The data.
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
-    samples : Array2D[f64]
-        The MCMC samples.
-
-    """
-
-    initial_model: AlinderModel
-    current_model: AlinderModel
-    data: onp.Array2D[np.float64]
-    z_mesh: onp.Array2D[np.float64]
-    vz_mesh: onp.Array2D[np.float64]
-    samples: onp.Array2D[np.float64]
-
-
-@dataclass
 class SpiralFitDiagnostics:
     """A result of the spiral fitting process.
 
@@ -110,6 +80,8 @@ class SpiralFitDiagnostics:
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
+    samples : Array2D[f64]
+        The MCMC samples.
     num_iterations : int
         The number of iterations taken.
     max_iterations : int | None
@@ -124,6 +96,7 @@ class SpiralFitDiagnostics:
     data: onp.Array2D[np.float64]
     z_mesh: onp.Array2D[np.float64]
     vz_mesh: onp.Array2D[np.float64]
+    samples: onp.Array2D[np.float64]
     num_iterations: int
     max_iterations: int | None
     converged: bool
@@ -626,6 +599,7 @@ class SpiralFitter:
         initial_model: AlinderModel | None = None
         current_model: AlinderModel | None = None
         best_model: AlinderModel | None = None
+        best_samples: onp.Array2D[np.float64] | None = None
         converged: bool = False
         num_iterations: int = 0
         while self._max_iterations is None or (num_iterations < self._max_iterations):
@@ -667,6 +641,7 @@ class SpiralFitter:
                 data=initial_density,
                 z_mesh=z_mesh,
                 vz_mesh=vz_mesh,
+                samples=flat_samples,
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
                 converged=converged,
@@ -685,9 +660,11 @@ class SpiralFitter:
             best_quality = quality
             background = new_background
             best_model = current_model
+            best_samples = flat_samples
 
         assert initial_model is not None
         assert best_model is not None
+        assert best_samples is not None
 
         yield SpiralFitDiagnostics(
             initial_model=initial_model,
@@ -695,6 +672,7 @@ class SpiralFitter:
             data=initial_density,
             z_mesh=z_mesh,
             vz_mesh=vz_mesh,
+            samples=best_samples,
             num_iterations=num_iterations,
             max_iterations=self._max_iterations,
             converged=converged,
