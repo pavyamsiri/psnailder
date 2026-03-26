@@ -493,7 +493,40 @@ class SpiralFitter:
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         seed: int | None = None,
-    ) -> Generator[SpiralFitIteration, None, SpiralFitDiagnostics]:
+    ) -> SpiralFitDiagnostics:
+        """Fit a phase spiral to the given vertical phase space distribution.
+
+        Parameters
+        ----------
+        z : Array1D[f64]
+            The z coordinate of the stars.
+        vz : Array1D[f64]
+            The Vz velocity of the stars.
+        z_bins : Array1D[f64]
+            The bin edges over z.
+        vz_bins : Array1D[f64]
+            The bin edges over vz.
+        seed : int | None
+            The random seed to use or `None` if no seed.
+
+        Returns
+        -------
+        result : SpiralFitDiagnostics
+            The fitting result.
+
+        """
+        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed))
+        assert val is not None
+        return val
+
+    def fit_spiral_gen(
+        self,
+        z: onp.Array1D[np.float64],
+        vz: onp.Array1D[np.float64],
+        z_bins: onp.Array1D[np.float64],
+        vz_bins: onp.Array1D[np.float64],
+        seed: int | None = None,
+    ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space distribution.
 
         Parameters
@@ -520,10 +553,9 @@ class SpiralFitter:
         vz_mesh, z_mesh = np.meshgrid(vz_centres, z_centres)
 
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=True)
-
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
 
-        return self.fit_spiral_with_background(density, background, z_mesh, vz_mesh, seed=seed)
+        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
 
     def fit_spiral_with_background(
         self,
@@ -532,7 +564,40 @@ class SpiralFitter:
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         seed: int | None = None,
-    ) -> Generator[SpiralFitIteration, None, SpiralFitDiagnostics]:
+    ) -> SpiralFitDiagnostics:
+        """Fit a phase spiral to the given vertical phase space map and background.
+
+        Parameters
+        ----------
+        initial_density : Array2D[f64]
+            The initial density.
+        initial_background : Array2D[f64]
+            The initial background.
+        z_mesh : Array2D[f64]
+            The z values for each cell.
+        vz_mesh : Array2D[f64]
+            The Vz values for each cell.
+        seed : int | None
+            The random seed to use or `None` if no seed.
+
+        Returns
+        -------
+        result : SpiralFitDiagnostics
+            The fitting result.
+
+        """
+        val = _get_value_from_gen(self.fit_spiral_with_background_gen(initial_density, initial_background, z_mesh, vz_mesh, seed))
+        assert val is not None
+        return val
+
+    def fit_spiral_with_background_gen(
+        self,
+        initial_density: onp.Array2D[np.float64],
+        initial_background: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        seed: int | None = None,
+    ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space map and background.
 
         Parameters
@@ -555,7 +620,6 @@ class SpiralFitter:
 
         """
         rng = np.random.default_rng(seed=seed)
-        np.random.seed(seed)
         mask = _mask(z_mesh, vz_mesh)
         background = initial_background
         best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
@@ -566,6 +630,7 @@ class SpiralFitter:
         num_iterations: int = 0
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
+            np.random.seed(seed)
             sampler = emcee.EnsembleSampler(
                 self._num_walkers,
                 _NUM_PARAMETERS,
@@ -573,6 +638,7 @@ class SpiralFitter:
                 args=(self, initial_density, background, z_mesh, vz_mesh),
                 vectorize=True,
             )
+            np.random.seed(None)
 
             p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
             sampler.run_mcmc(p0, self._num_samples, progress=False)  # pyright: ignore[reportUnknownMemberType]
@@ -595,13 +661,15 @@ class SpiralFitter:
             if initial_model is None:
                 initial_model = current_model
 
-            yield SpiralFitIteration(
+            yield SpiralFitDiagnostics(
                 initial_model=initial_model,
-                current_model=current_model,
+                final_model=current_model,
                 data=initial_density,
                 z_mesh=z_mesh,
                 vz_mesh=vz_mesh,
-                samples=flat_samples,
+                num_iterations=num_iterations,
+                max_iterations=self._max_iterations,
+                converged=converged,
             )
 
             current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
@@ -621,8 +689,7 @@ class SpiralFitter:
         assert initial_model is not None
         assert best_model is not None
 
-        np.random.seed(None)
-        return SpiralFitDiagnostics(
+        yield SpiralFitDiagnostics(
             initial_model=initial_model,
             final_model=best_model,
             data=initial_density,
@@ -777,3 +844,23 @@ def generate_initial_background(
     estimated_background = kde(grid_points).reshape(z_mesh.shape)
 
     return estimated_background / estimated_background.sum() * density_scale
+
+
+def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
+    """Unwrap last yield value from generator.
+
+    Parameters
+    ----------
+    gen : Generator[T]
+        The generator.
+
+    Returns
+    -------
+    val : T | None
+        The last yielded value or `None` if the generator does not have any values.
+
+    """
+    val: T | None = None
+    for inner in gen:
+        val = inner
+    return val
