@@ -10,13 +10,13 @@ import numpy as np
 from scipy import ndimage, special, stats
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from typing import Final, Literal
 
     from optype import numpy as onp
 
 
-__all__ = ["SpiralFitter"]
+__all__: Final[Sequence[str]] = ["AlinderModel", "SpiralFitDiagnostics", "SpiralFitter"]
 
 
 @dataclass
@@ -69,6 +69,12 @@ class SpiralFitDiagnostics:
         The initial model.
     final_model : AlinderModel
         The best fit model.
+    data : Array2D[f64]
+        The data.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
     num_iterations : int
         The number of iterations taken.
     max_iterations : int | None
@@ -80,6 +86,9 @@ class SpiralFitDiagnostics:
 
     initial_model: AlinderModel
     final_model: AlinderModel
+    data: onp.Array2D[np.float64]
+    z_mesh: onp.Array2D[np.float64]
+    vz_mesh: onp.Array2D[np.float64]
     num_iterations: int
     max_iterations: int | None
     converged: bool
@@ -142,6 +151,25 @@ class AlinderModel:
             phase = r_mesh / self.b
         flattening = special.expit((r_mesh - self.rho) / 0.1)
         return 1.0 + self.alpha * flattening * np.cos(theta_mesh - phase - self.theta0)
+
+    def fit(self, z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
+        """Calculate the predicted data/fit.
+
+        Parameters
+        ----------
+        z_mesh : Array2D[f64]
+            The z values for each cell.
+        vz_mesh : Array2D[f64]
+            The Vz values for each cell.
+
+        Returns
+        -------
+        fit : Array2D[f64]
+            The prediction.
+
+        """
+        pert = self.perturbation(z_mesh, vz_mesh)
+        return pert * self.background
 
     def phase_angle(self) -> float:
         """Calculate the phase angle.
@@ -563,6 +591,9 @@ class SpiralFitter:
         return SpiralFitDiagnostics(
             initial_model=initial_model,
             final_model=best_model,
+            data=initial_density,
+            z_mesh=z_mesh,
+            vz_mesh=vz_mesh,
             num_iterations=num_iterations,
             max_iterations=self._max_iterations,
             converged=converged,
