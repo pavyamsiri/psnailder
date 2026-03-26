@@ -505,7 +505,7 @@ class SpiralFitter:
         np.random.seed(seed)
         mask = _mask(z_mesh, vz_mesh)
         background = initial_background
-        best_quality: float = _calculate_rmse(initial_density, initial_background, mask)
+        best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
         initial_model: AlinderModel | None = None
         current_model: AlinderModel | None = None
         best_model: AlinderModel | None = None
@@ -545,7 +545,7 @@ class SpiralFitter:
             current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
             new_background = self._smoothing_func(initial_density / current_perturbation)
             new_data = current_perturbation * new_background
-            fit_ssr = _calculate_rmse(initial_density, new_data, mask)
+            fit_ssr = _calculate_rmse_with_mask(initial_density, new_data, mask)
             quality = fit_ssr
             if best_quality <= quality:
                 converged = best_model is not None
@@ -588,7 +588,38 @@ def _mask(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> 
     return -special.expit(np.square(z_mesh) + np.square(vz_mesh / 40) - 1.0) + 1.0
 
 
-def _calculate_rmse(data: onp.Array2D[np.float64], estimate: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]) -> float:
+def calculate_rmse(
+    data: onp.Array2D[np.float64],
+    estimate: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Calculate the root mean sum of square residuals.
+
+    Parameters
+    ----------
+    data : Array2D[f64]
+        The data to compare to.
+    estimate : Array2D[f64]
+        The estimate/prediction.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    rmse : float
+        The root mean sum of square residuals.
+
+    """
+    mask = _mask(z_mesh, vz_mesh)
+    return _calculate_rmse_with_mask(data, estimate, mask)
+
+
+def _calculate_rmse_with_mask(
+    data: onp.Array2D[np.float64], estimate: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]
+) -> float:
     """Calculate the root mean sum of square residuals.
 
     Parameters
