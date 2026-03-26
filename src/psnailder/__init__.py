@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import emcee
+import emcee  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
 from scipy import ndimage, special, stats
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from typing import Final, Literal
 
     from optype import numpy as onp
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 __all__: Final[Sequence[str]] = [
     "AlinderModel",
     "SpiralFitDiagnostics",
+    "SpiralFitIteration",
     "SpiralFitter",
     "generate_initial_background",
 ]
@@ -62,6 +63,35 @@ _RHO_INDEX: Final[int] = 5
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
+
+
+@dataclass
+class SpiralFitIteration:
+    """Data yielded per iteration of the spiral fitting algorithm.
+
+    Attributes
+    ----------
+    initial_model : AlinderModel
+        The initial model.
+    current_model : AlinderModel
+        The current model.
+    data : Array2D[f64]
+        The data.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+    samples : Array2D[f64]
+        The MCMC samples.
+
+    """
+
+    initial_model: AlinderModel
+    current_model: AlinderModel
+    data: onp.Array2D[np.float64]
+    z_mesh: onp.Array2D[np.float64]
+    vz_mesh: onp.Array2D[np.float64]
+    samples: onp.Array2D[np.float64]
 
 
 @dataclass
@@ -463,7 +493,7 @@ class SpiralFitter:
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         seed: int | None = None,
-    ) -> SpiralFitDiagnostics:
+    ) -> Generator[SpiralFitIteration, None, SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space distribution.
 
         Parameters
@@ -502,7 +532,7 @@ class SpiralFitter:
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         seed: int | None = None,
-    ) -> SpiralFitDiagnostics:
+    ) -> Generator[SpiralFitIteration, None, SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space map and background.
 
         Parameters
@@ -545,10 +575,10 @@ class SpiralFitter:
             )
 
             p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
-            sampler.run_mcmc(p0, self._num_samples, progress=False)
+            sampler.run_mcmc(p0, self._num_samples, progress=False)  # pyright: ignore[reportUnknownMemberType]
 
-            flat_samples = sampler.get_chain(discard=self._num_discard, flat=True)
-            log_probs = sampler.get_log_prob(discard=self._num_discard, flat=True)
+            flat_samples: onp.Array2D[np.float64] = sampler.get_chain(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
+            log_probs: onp.Array1D[np.float64] = sampler.get_log_prob(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
             best_index = np.argmax(log_probs)
             best_params = flat_samples[best_index]
 
@@ -564,6 +594,15 @@ class SpiralFitter:
 
             if initial_model is None:
                 initial_model = current_model
+
+            yield SpiralFitIteration(
+                initial_model=initial_model,
+                current_model=current_model,
+                data=initial_density,
+                z_mesh=z_mesh,
+                vz_mesh=vz_mesh,
+                samples=flat_samples,
+            )
 
             current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
             new_background = self._smoothing_func(initial_density / current_perturbation)
