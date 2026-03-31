@@ -82,6 +82,8 @@ class SpiralFitDiagnostics:
         The Vz values for each cell.
     samples : Array2D[f64]
         The MCMC samples.
+    log_probs : Array1D[f64]
+        The log probabilities.
     num_iterations : int
         The number of iterations taken.
     max_iterations : int | None
@@ -97,6 +99,7 @@ class SpiralFitDiagnostics:
     z_mesh: onp.Array2D[np.float64]
     vz_mesh: onp.Array2D[np.float64]
     samples: onp.Array2D[np.float64]
+    log_probs: onp.Array1D[np.float64]
     num_iterations: int
     max_iterations: int | None
     converged: bool
@@ -600,6 +603,7 @@ class SpiralFitter:
         current_model: AlinderModel | None = None
         best_model: AlinderModel | None = None
         best_samples: onp.Array2D[np.float64] | None = None
+        best_probs: onp.Array1D[np.float64] | None = None
         converged: bool = False
         num_iterations: int = 0
         while self._max_iterations is None or (num_iterations < self._max_iterations):
@@ -642,6 +646,7 @@ class SpiralFitter:
                 z_mesh=z_mesh,
                 vz_mesh=vz_mesh,
                 samples=flat_samples,
+                log_probs=log_probs,
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
                 converged=converged,
@@ -662,10 +667,12 @@ class SpiralFitter:
             background = new_background
             best_model = current_model
             best_samples = flat_samples
+            best_probs = log_probs
 
         assert initial_model is not None
         assert best_model is not None
         assert best_samples is not None
+        assert best_probs is not None
 
         yield SpiralFitDiagnostics(
             initial_model=initial_model,
@@ -674,6 +681,7 @@ class SpiralFitter:
             z_mesh=z_mesh,
             vz_mesh=vz_mesh,
             samples=best_samples,
+            log_probs=best_probs,
             num_iterations=num_iterations,
             max_iterations=self._max_iterations,
             converged=converged,
