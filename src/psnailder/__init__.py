@@ -680,6 +680,7 @@ class SpiralFitter:
 
             current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
             new_background = self._smoothing_func(initial_density / current_perturbation)
+            new_background = new_background / new_background.sum() * initial_density.sum()
             new_data = current_perturbation * new_background
             fit_ssr = _calculate_rmse_with_mask(initial_density, new_data, mask)
             quality = fit_ssr
