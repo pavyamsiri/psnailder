@@ -468,6 +468,8 @@ class SpiralFitter:
         vz: onp.Array1D[np.float64],
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
+        *,
+        use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
         """Fit a phase spiral to the given vertical phase space distribution.
@@ -482,6 +484,8 @@ class SpiralFitter:
             The bin edges over z.
         vz_bins : Array1D[f64]
             The bin edges over vz.
+        use_median : bool
+            Set this flag to use the median sample for each parameter instead of highest probability.
         seed : int | None
             The random seed to use or `None` if no seed.
 
@@ -491,7 +495,7 @@ class SpiralFitter:
             The fitting result.
 
         """
-        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed))
+        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, use_median=use_median, seed=seed))
         assert val is not None
         return val
 
@@ -501,6 +505,8 @@ class SpiralFitter:
         vz: onp.Array1D[np.float64],
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
+        *,
+        use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space distribution.
@@ -515,6 +521,8 @@ class SpiralFitter:
             The bin edges over z.
         vz_bins : Array1D[f64]
             The bin edges over vz.
+        use_median : bool
+            Set this flag to use the median sample for each parameter instead of highest probability.
         seed : int | None
             The random seed to use or `None` if no seed.
 
@@ -531,7 +539,7 @@ class SpiralFitter:
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=True)
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
 
-        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
+        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, use_median=use_median, seed=seed)
 
     def fit_spiral_with_background(
         self,
@@ -539,6 +547,8 @@ class SpiralFitter:
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
+        *,
+        use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
         """Fit a phase spiral to the given vertical phase space map and background.
@@ -553,6 +563,8 @@ class SpiralFitter:
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
+        use_median : bool
+            Set this flag to use the median sample for each parameter instead of highest probability.
         seed : int | None
             The random seed to use or `None` if no seed.
 
@@ -562,7 +574,11 @@ class SpiralFitter:
             The fitting result.
 
         """
-        val = _get_value_from_gen(self.fit_spiral_with_background_gen(initial_density, initial_background, z_mesh, vz_mesh, seed))
+        val = _get_value_from_gen(
+            self.fit_spiral_with_background_gen(
+                initial_density, initial_background, z_mesh, vz_mesh, use_median=use_median, seed=seed
+            )
+        )
         assert val is not None
         return val
 
@@ -572,6 +588,7 @@ class SpiralFitter:
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
+        use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space map and background.
@@ -586,6 +603,8 @@ class SpiralFitter:
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
+        use_median : bool
+            Set this flag to use the median sample for each parameter instead of highest probability.
         seed : int | None
             The random seed to use or `None` if no seed.
 
@@ -623,8 +642,11 @@ class SpiralFitter:
 
             flat_samples: onp.Array2D[np.float64] = sampler.get_chain(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
             log_probs: onp.Array1D[np.float64] = sampler.get_log_prob(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
-            best_index = np.argmax(log_probs)
-            best_params = flat_samples[best_index]
+            if use_median:
+                best_params = np.median(flat_samples, axis=0)
+            else:
+                best_index = np.argmax(log_probs)
+                best_params = flat_samples[best_index]
 
             current_model = AlinderModel(
                 alpha=best_params[0],

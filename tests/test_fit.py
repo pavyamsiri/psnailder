@@ -28,7 +28,7 @@ def test_gaussian_fit_improvement(seed: int) -> None:
     dvz: float = 2.0
     z_bins = np.arange(-1.2, 1.2 + dz, dz)
     vz_bins = np.arange(-60.0, 60.0 + dvz, dvz)
-    res = fitter.fit_spiral(z, vz, z_bins, vz_bins)
+    res = fitter.fit_spiral(z, vz, z_bins, vz_bins, use_median=True)
     init_bg_rmse = calculate_rmse(res.data, res.initial_model.background, res.z_mesh, res.vz_mesh)
     final_bg_rmse = calculate_rmse(res.data, res.final_model.background, res.z_mesh, res.vz_mesh)
     final_fit_rmse = calculate_rmse(res.data, res.final_model.fit(res.z_mesh, res.vz_mesh), res.z_mesh, res.vz_mesh)
