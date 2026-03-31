@@ -314,6 +314,7 @@ class SpiralFitter:
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
+        use_density: bool = True,
     ) -> None:
         """Construct a fitter.
 
@@ -335,6 +336,8 @@ class SpiralFitter:
             The lower bounds of the parameters. Set this to `None` to use the default bounds.
         param_hi : dict[ParamName, float] | None
             The upper bounds of the parameters. Set this to `None` to use the default bounds.
+        use_density : bool
+            Set this flag to make the histogram of the vertical phase space return number density instead of number count.
 
         """
         self._num_samples: int = num_samples
@@ -344,6 +347,7 @@ class SpiralFitter:
         self._smoothing_func: _SmoothingFunc = SpiralFitter._default_smoothing if smoothing_func is None else smoothing_func
         self._param_lo: onp.Array1D[np.float64] = np.array([param.lo for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi: onp.Array1D[np.float64] = np.array([param.hi for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
+        self._use_density: bool = use_density
 
         default_lo: dict[_ParamName, float] = {p.name: p.lo for p in _DEFAULT_PARAM_BOUNDS}
         default_hi: dict[_ParamName, float] = {p.name: p.hi for p in _DEFAULT_PARAM_BOUNDS}
@@ -536,7 +540,7 @@ class SpiralFitter:
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
         vz_mesh, z_mesh = np.meshgrid(vz_centres, z_centres)
 
-        density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=True)
+        density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=self._use_density)
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
 
         return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, use_median=use_median, seed=seed)
