@@ -650,7 +650,6 @@ class SpiralFitterMinimizer(SpiralFitter):
         """
         bounds: list[tuple[float, float]] = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
 
-        rng = np.random.default_rng(seed=seed)
         mask = _mask(z_mesh, vz_mesh)
         background = initial_background
         best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
@@ -664,42 +663,17 @@ class SpiralFitterMinimizer(SpiralFitter):
 
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
-
-            p0: onp.Array1D[np.float64]
-            # Start from a random point within the parameter bounds
-            if best_model is None:
-                p0 = rng.uniform(self._param_lo, self._param_hi, size=(_NUM_PARAMETERS,))
-            # Perturb the best known parameters with Gaussian noise
-            else:
-                param_range = self._param_hi - self._param_lo
-                noise = rng.normal(
-                    loc=0.0,
-                    scale=param_range * self._param_noise,
-                    size=(_NUM_PARAMETERS,),
-                )
-                old_params: onp.Array1D[np.float64] = np.array(
-                    [
-                        best_model.alpha,
-                        best_model.b,
-                        best_model.c,
-                        best_model.theta0,
-                        best_model.scale_factor,
-                        best_model.rho,
-                    ],
-                    dtype=np.float64,
-                )
-                p0 = np.clip(old_params + noise, self._param_lo, self._param_hi)
-
+            popsize = max(1, self._num_walkers // _NUM_PARAMETERS)
             res = optimize.differential_evolution(
                 ln_prob_opt,
-                bounds=bounds,
+                bounds=bounds,  # pyright: ignore[reportArgumentType]
                 args=(self, initial_density, background, z_mesh, vz_mesh),
                 seed=seed,
-                popsize=15,  # 15 * n_params = 90 candidate solutions
+                popsize=popsize,
                 mutation=(0.5, 1),
                 recombination=0.7,
                 tol=1e-5,
-                polish=True,  # runs a local minimizer on the best result at the end
+                polish=True,
             )
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
