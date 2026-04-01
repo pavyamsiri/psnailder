@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 
 import emcee  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
-from scipy import ndimage, special, stats
+from scipy import ndimage, special, stats, optimize
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
@@ -22,6 +22,7 @@ __all__: Final[Sequence[str]] = [
     "SpiralFitDiagnostics",
     "SpiralFitter",
     "SpiralFitterMCMC",
+    "SpiralFitterMinimizer",
     "generate_initial_background",
 ]
 
@@ -319,33 +320,6 @@ class SpiralFitter(ABC):
         param_noise: float = 0.01,
         use_density: bool = True,
     ) -> None:
-        """Construct a fitter.
-
-        Parameters
-        ----------
-        num_samples : int
-            The number of MCMC posterior samples.
-        num_discard : int
-            The number of MCMC samples to discard/burn in.
-        num_walkers : int
-            The number of walkers.
-        max_iterations : int | None
-            The maximum number of background fitting iterations. Set this to `None` to allow
-            not bound the number of iterations.
-        smoothing_func : _SmoothingFunc | None
-            The smoothing function to apply to obtain the background in each iteration. Set this to `None` to
-            use the default smoothing.
-        param_lo : dict[ParamName, float] | None
-            The lower bounds of the parameters. Set this to `None` to use the default bounds.
-        param_hi : dict[ParamName, float] | None
-            The upper bounds of the parameters. Set this to `None` to use the default bounds.
-        param_noise : float
-            The percentage of the parameter range to set the std of the Gaussian noise when perturbing the best parameters.
-            Used when determining the initial positions of the walkers.
-        use_density : bool
-            Set this flag to make the histogram of the vertical phase space return number density instead of number count.
-
-        """
         self._num_samples: int = num_samples
         self._num_discard: int = num_discard
         self._num_walkers: int = num_walkers
@@ -371,47 +345,19 @@ class SpiralFitter(ABC):
                 raise ValueError(msg)
             default_hi.update(param_hi)
 
-        # Validate lo < hi after merging
         for name in default_lo:
             if default_lo[name] >= default_hi[name]:
                 msg = f"param_lo[{name!r}] must be strictly less than param_hi[{name!r}]"
                 raise ValueError(msg)
 
-        # Preserve canonical ordering
         self._param_lo = np.array([default_lo[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi = np.array([default_hi[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
 
     @staticmethod
     def _default_smoothing(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-        """The default smoothing function to get the background.
-
-        Parameters
-        ----------
-        arr : Array2D[f64]
-            The array to smooth.
-
-        Returns
-        -------
-        smoothed : Array2D[f64]
-            The smoothed array.
-
-        """
         return ndimage.gaussian_filter(arr, sigma=2)
 
     def _ln_prior(self, models: AlinderModelCollection) -> onp.Array1D[np.float64]:
-        """Log prior probability (uniform within bounds, -inf outside).
-
-        Parameters
-        ----------
-        models : AlinderModelVectorised
-            A collection of spiral models.
-
-        Returns
-        -------
-        log_prior : Array1D[f64]
-            The log of the prior in the shape (num_walkers,).
-
-        """
         in_bounds: onp.Array1D[np.bool_] = np.ones(models.num_walkers, dtype=np.bool_)
 
         for index in range(_NUM_PARAMETERS):
@@ -432,27 +378,6 @@ class SpiralFitter(ABC):
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
     ) -> onp.Array1D[np.float64]:
-        """Log likelihood probability.
-
-        Parameters
-        ----------
-        models : AlinderModelVectorised
-            A collection of spiral models.
-        counts : Array2D[f64]
-            The observed data in a grid.
-        background : Array2D[f64]
-            The background.
-        z_mesh : Array2D[f64]
-            The z value at each mesh point.
-        vz_mesh : Array2D[f64]
-            The vz value at each mesh point.
-
-        Returns
-        -------
-        ln_likelihood : Array1D[f64]
-            The log of the likelihood.
-
-        """
         ln_prior = self._ln_prior(models)
         pert = models.perturbation(z_mesh, vz_mesh, np.isfinite(ln_prior))
         mask = _mask(z_mesh, vz_mesh)
@@ -483,29 +408,6 @@ class SpiralFitter(ABC):
         use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
-        """Fit a phase spiral to the given vertical phase space distribution.
-
-        Parameters
-        ----------
-        z : Array1D[f64]
-            The z coordinate of the stars.
-        vz : Array1D[f64]
-            The Vz velocity of the stars.
-        z_bins : Array1D[f64]
-            The bin edges over z.
-        vz_bins : Array1D[f64]
-            The bin edges over vz.
-        use_median : bool
-            Set this flag to use the median sample for each parameter instead of highest probability.
-        seed : int | None
-            The random seed to use or `None` if no seed.
-
-        Returns
-        -------
-        result : SpiralFitDiagnostics
-            The fitting result.
-
-        """
         val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, use_median=use_median, seed=seed))
         assert val is not None
         return val
@@ -520,29 +422,6 @@ class SpiralFitter(ABC):
         use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
-        """Fit a phase spiral to the given vertical phase space distribution.
-
-        Parameters
-        ----------
-        z : Array1D[f64]
-            The z coordinate of the stars.
-        vz : Array1D[f64]
-            The Vz velocity of the stars.
-        z_bins : Array1D[f64]
-            The bin edges over z.
-        vz_bins : Array1D[f64]
-            The bin edges over vz.
-        use_median : bool
-            Set this flag to use the median sample for each parameter instead of highest probability.
-        seed : int | None
-            The random seed to use or `None` if no seed.
-
-        Returns
-        -------
-        result : SpiralFitDiagnostics
-            The fitting result.
-
-        """
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
         vz_mesh, z_mesh = np.meshgrid(vz_centres, z_centres)
@@ -562,29 +441,6 @@ class SpiralFitter(ABC):
         use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
-        """Fit a phase spiral to the given vertical phase space map and background.
-
-        Parameters
-        ----------
-        initial_density : Array2D[f64]
-            The initial density.
-        initial_background : Array2D[f64]
-            The initial background.
-        z_mesh : Array2D[f64]
-            The z values for each cell.
-        vz_mesh : Array2D[f64]
-            The Vz values for each cell.
-        use_median : bool
-            Set this flag to use the median sample for each parameter instead of highest probability.
-        seed : int | None
-            The random seed to use or `None` if no seed.
-
-        Returns
-        -------
-        result : SpiralFitDiagnostics
-            The fitting result.
-
-        """
         val = _get_value_from_gen(
             self.fit_spiral_with_background_gen(
                 initial_density, initial_background, z_mesh, vz_mesh, use_median=use_median, seed=seed
@@ -602,31 +458,7 @@ class SpiralFitter(ABC):
         vz_mesh: onp.Array2D[np.float64],
         use_median: bool,
         seed: int | None = None,
-    ) -> Generator[SpiralFitDiagnostics]:
-        """Fit a phase spiral to the given vertical phase space map and background.
-
-        Parameters
-        ----------
-        initial_density : Array2D[f64]
-            The initial density.
-        initial_background : Array2D[f64]
-            The initial background.
-        z_mesh : Array2D[f64]
-            The z values for each cell.
-        vz_mesh : Array2D[f64]
-            The Vz values for each cell.
-        use_median : bool
-            Set this flag to use the median sample for each parameter instead of highest probability.
-        seed : int | None
-            The random seed to use or `None` if no seed.
-
-        Returns
-        -------
-        result : SpiralFitDiagnostics
-            The fitting result.
-
-        """
-        ...
+    ) -> Generator[SpiralFitDiagnostics]: ...
 
 
 class SpiralFitterMCMC(SpiralFitter):
@@ -645,29 +477,6 @@ class SpiralFitterMCMC(SpiralFitter):
         use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
-        """Fit a phase spiral to the given vertical phase space map and background.
-
-        Parameters
-        ----------
-        initial_density : Array2D[f64]
-            The initial density.
-        initial_background : Array2D[f64]
-            The initial background.
-        z_mesh : Array2D[f64]
-            The z values for each cell.
-        vz_mesh : Array2D[f64]
-            The Vz values for each cell.
-        use_median : bool
-            Set this flag to use the median sample for each parameter instead of highest probability.
-        seed : int | None
-            The random seed to use or `None` if no seed.
-
-        Returns
-        -------
-        result : SpiralFitDiagnostics
-            The fitting result.
-
-        """
         rng = np.random.default_rng(seed=seed)
         mask = _mask(z_mesh, vz_mesh)
         background = initial_background
@@ -685,17 +494,15 @@ class SpiralFitterMCMC(SpiralFitter):
             sampler = emcee.EnsembleSampler(
                 self._num_walkers,
                 _NUM_PARAMETERS,
-                ln_prob,
+                ln_prob_mcmc,
                 args=(self, initial_density, background, z_mesh, vz_mesh),
                 vectorize=True,
             )
             np.random.seed(None)
 
             p0: onp.Array2D[np.float64]
-            # Walkers are uniformly distributed
             if best_model is None:
                 p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
-            # Walkers are Gaussian distributed around best model's parameters
             else:
                 param_range = self._param_hi - self._param_lo
                 noise = rng.normal(
@@ -796,22 +603,178 @@ class SpiralFitterMCMC(SpiralFitter):
         )
 
 
-def _mask(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-    """Construct a mask used when evaluating quality.
+class SpiralFitterMinimizer(SpiralFitter):
+    """A configuration of the Alinder et al 2023 fitting algorithm.
 
-    Parameters
-    ----------
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
+    This implementation uses scipy.optimize.minimize to fit the parameters.
 
-    Returns
-    -------
-    mask : Array2D[f64]
-        The mask.
+    Unlike the MCMC fitter, there is no posterior distribution to sample from.
+    The ``samples`` and ``log_probs`` fields of :class:`SpiralFitDiagnostics` will
+    therefore each contain a single row/entry representing the optimizer solution.
+    The ``use_median`` parameter has no effect and is accepted only for API
+    compatibility with :class:`SpiralFitterMCMC`.
 
     """
+
+    def fit_spiral_with_background_gen(
+        self,
+        initial_density: onp.Array2D[np.float64],
+        initial_background: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        use_median: bool,
+        seed: int | None = None,
+    ) -> Generator[SpiralFitDiagnostics]:
+        """Fit a phase spiral to the given vertical phase space map and background.
+
+        Parameters
+        ----------
+        initial_density : Array2D[f64]
+            The initial density.
+        initial_background : Array2D[f64]
+            The initial background.
+        z_mesh : Array2D[f64]
+            The z values for each cell.
+        vz_mesh : Array2D[f64]
+            The Vz values for each cell.
+        use_median : bool
+            Unused; accepted for API compatibility with :class:`SpiralFitterMCMC`.
+        seed : int | None
+            The random seed to use or `None` if no seed.
+
+        Returns
+        -------
+        result : SpiralFitDiagnostics
+            The fitting result.
+
+        """
+        bounds: list[tuple[float, float]] = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
+
+        rng = np.random.default_rng(seed=seed)
+        mask = _mask(z_mesh, vz_mesh)
+        background = initial_background
+        best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
+        initial_model: AlinderModel | None = None
+        current_model: AlinderModel | None = None
+        best_model: AlinderModel | None = None
+        best_samples: onp.Array2D[np.float64] | None = None
+        best_probs: onp.Array1D[np.float64] | None = None
+        converged: bool = False
+        num_iterations: int = 0
+
+        while self._max_iterations is None or (num_iterations < self._max_iterations):
+            num_iterations += 1
+
+            p0: onp.Array1D[np.float64]
+            # Start from a random point within the parameter bounds
+            if best_model is None:
+                p0 = rng.uniform(self._param_lo, self._param_hi, size=(_NUM_PARAMETERS,))
+            # Perturb the best known parameters with Gaussian noise
+            else:
+                param_range = self._param_hi - self._param_lo
+                noise = rng.normal(
+                    loc=0.0,
+                    scale=param_range * self._param_noise,
+                    size=(_NUM_PARAMETERS,),
+                )
+                old_params: onp.Array1D[np.float64] = np.array(
+                    [
+                        best_model.alpha,
+                        best_model.b,
+                        best_model.c,
+                        best_model.theta0,
+                        best_model.scale_factor,
+                        best_model.rho,
+                    ],
+                    dtype=np.float64,
+                )
+                p0 = np.clip(old_params + noise, self._param_lo, self._param_hi)
+
+            np.random.seed(seed)
+            res = optimize.minimize(
+                ln_prob_opt,
+                p0,
+                args=(self, initial_density, background, z_mesh, vz_mesh),
+                bounds=bounds,
+            )
+            np.random.seed(None)
+
+            best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
+
+            # Represent the single optimiser solution as a one-row "sample" array so
+            # the rest of the pipeline (which expects MCMC-style arrays) works unchanged.
+            flat_samples: onp.Array2D[np.float64] = best_params.reshape(1, _NUM_PARAMETERS)
+            # res.fun is the *negated* log-prob (we minimise -ln_prob), so negate back.
+            log_probs: onp.Array1D[np.float64] = np.array([-res.fun], dtype=np.float64)
+
+            current_model = AlinderModel(
+                alpha=best_params[_ALPHA_INDEX],
+                b=best_params[_B_INDEX],
+                c=best_params[_C_INDEX],
+                theta0=best_params[_THETA0_INDEX],
+                scale_factor=best_params[_SCALE_FACTOR_INDEX],
+                rho=best_params[_RHO_INDEX],
+                background=background,
+            )
+
+            if initial_model is None:
+                initial_model = current_model
+
+            yield SpiralFitDiagnostics(
+                initial_model=initial_model,
+                final_model=current_model,
+                data=initial_density,
+                z_mesh=z_mesh,
+                vz_mesh=vz_mesh,
+                samples=flat_samples,
+                log_probs=log_probs,
+                num_iterations=num_iterations,
+                max_iterations=self._max_iterations,
+                converged=converged,
+            )
+
+            current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
+            new_background = self._smoothing_func(initial_density / current_perturbation)
+            new_background = new_background / new_background.sum() * initial_density.sum()
+            new_data = current_perturbation * new_background
+            quality = _calculate_rmse_with_mask(initial_density, new_data, mask)
+
+            if best_quality <= quality:
+                # Quality has stopped improving — we have converged (or never improved).
+                converged = best_model is not None
+                if best_model is None:
+                    # First iteration was already the best; treat initial model as best.
+                    best_model = initial_model
+                    best_samples = flat_samples
+                    best_probs = log_probs
+                break
+
+            best_quality = quality
+            background = new_background
+            best_model = current_model
+            best_samples = flat_samples
+            best_probs = log_probs
+
+        assert initial_model is not None
+        assert best_model is not None
+        assert best_samples is not None
+        assert best_probs is not None
+
+        yield SpiralFitDiagnostics(
+            initial_model=initial_model,
+            final_model=best_model,
+            data=initial_density,
+            z_mesh=z_mesh,
+            vz_mesh=vz_mesh,
+            samples=best_samples,
+            log_probs=best_probs,
+            num_iterations=num_iterations,
+            max_iterations=self._max_iterations,
+            converged=converged,
+        )
+
+
+def _mask(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
     return -special.expit(np.square(z_mesh) + np.square(vz_mesh / 40) - 1.0) + 1.0
 
 
@@ -821,25 +784,6 @@ def calculate_rmse(
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
 ) -> float:
-    """Calculate the root mean sum of square residuals.
-
-    Parameters
-    ----------
-    data : Array2D[f64]
-        The data to compare to.
-    estimate : Array2D[f64]
-        The estimate/prediction.
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
-
-    Returns
-    -------
-    rmse : float
-        The root mean sum of square residuals.
-
-    """
     mask = _mask(z_mesh, vz_mesh)
     return _calculate_rmse_with_mask(data, estimate, mask)
 
@@ -847,27 +791,10 @@ def calculate_rmse(
 def _calculate_rmse_with_mask(
     data: onp.Array2D[np.float64], estimate: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]
 ) -> float:
-    """Calculate the root mean sum of square residuals.
-
-    Parameters
-    ----------
-    data : Array2D[f64]
-        The data to compare to.
-    estimate : Array2D[f64]
-        The estimate/prediction.
-    mask : Array2D[f64]
-        The mask.
-
-    Returns
-    -------
-    rmse : float
-        The root mean sum of square residuals.
-
-    """
     return np.sqrt(np.mean(np.square(mask * (data - estimate))))
 
 
-def ln_prob(
+def ln_prob_mcmc(
     parameters: onp.Array2D[np.float64],
     fitter: SpiralFitter,
     counts: onp.Array2D[np.float64],
@@ -875,12 +802,12 @@ def ln_prob(
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
 ) -> onp.Array1D[np.float64]:
-    """Log likelihood probability (uniform within bounds, -inf outside).
+    """Log likelihood probability for the MCMC sampler (vectorised over walkers).
 
     Parameters
     ----------
     parameters : Array2D[f64]
-        Parameter vector [alpha, b, c, theta0, S, rho], in the shape (num_walkers, 6).
+        Parameter matrix of shape ``(num_walkers, 6)``.
     fitter : SpiralFitter
         The fitting configuration.
     counts : Array2D[f64]
@@ -895,11 +822,49 @@ def ln_prob(
     Returns
     -------
     log_likelihood : Array1D[f64]
-        The log of the likelihood.
+        The log of the likelihood for each walker.
 
     """
     collection = AlinderModelCollection(parameters=parameters, background=background)
     return fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)
+
+
+def ln_prob_opt(
+    parameters: onp.Array1D[np.float64],
+    fitter: SpiralFitter,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Negated log-probability for use with :func:`scipy.optimize.minimize`.
+
+    ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
+    minimising this objective is equivalent to maximising the log-probability.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
+    fitter : SpiralFitter
+        The fitting configuration.
+    counts : Array2D[f64]
+        The observed data in a grid.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    neg_log_likelihood : float
+        The negated log-probability.
+
+    """
+    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
+    return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
 
 
 def generate_initial_background(
@@ -909,7 +874,7 @@ def generate_initial_background(
     vz_mesh: onp.Array2D[np.float64],
     density_scale: float,
 ) -> onp.Array2D[np.float64]:
-    """
+    """Generate a symmetric KDE background as the initial background estimate.
 
     Parameters
     ----------
@@ -952,7 +917,7 @@ def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
     Returns
     -------
     val : T | None
-        The last yielded value or `None` if the generator does not have any values.
+        The last yielded value or ``None`` if the generator is empty.
 
     """
     val: T | None = None
