@@ -314,6 +314,7 @@ class SpiralFitter:
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
+        param_noise: float = 0.01,
         use_density: bool = True,
     ) -> None:
         """Construct a fitter.
@@ -336,6 +337,9 @@ class SpiralFitter:
             The lower bounds of the parameters. Set this to `None` to use the default bounds.
         param_hi : dict[ParamName, float] | None
             The upper bounds of the parameters. Set this to `None` to use the default bounds.
+        param_noise : float
+            The percentage of the parameter range to set the std of the Gaussian noise when perturbing the best parameters.
+            Used when determining the initial positions of the walkers.
         use_density : bool
             Set this flag to make the histogram of the vertical phase space return number density instead of number count.
 
@@ -348,6 +352,7 @@ class SpiralFitter:
         self._param_lo: onp.Array1D[np.float64] = np.array([param.lo for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi: onp.Array1D[np.float64] = np.array([param.hi for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._use_density: bool = use_density
+        self._param_noise: float = param_noise
 
         default_lo: dict[_ParamName, float] = {p.name: p.lo for p in _DEFAULT_PARAM_BOUNDS}
         default_hi: dict[_ParamName, float] = {p.name: p.hi for p in _DEFAULT_PARAM_BOUNDS}
@@ -641,7 +646,38 @@ class SpiralFitter:
             )
             np.random.seed(None)
 
-            p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
+            p0: onp.Array2D[np.float64]
+            # Walkers are uniformly distributed
+            if best_model is None:
+                p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
+            # Walkers are Gaussian distributed around best model's parameters
+            else:
+                param_range = self._param_hi - self._param_lo
+                noise = rng.normal(
+                    loc=0.0,
+                    scale=param_range * self._param_noise,
+                    size=(self._num_walkers, _NUM_PARAMETERS),
+                )
+                old_params: onp.Array2D[np.float64] = np.tile(
+                    np.array(
+                        [
+                            best_model.alpha,
+                            best_model.b,
+                            best_model.c,
+                            best_model.theta0,
+                            best_model.scale_factor,
+                            best_model.rho,
+                        ],
+                        dtype=np.float64,
+                    ),
+                    (self._num_walkers, 1),
+                )
+                p0 = np.clip(
+                    old_params + noise,
+                    self._param_lo,
+                    self._param_hi,
+                )
+
             sampler.run_mcmc(p0, self._num_samples, progress=False)  # pyright: ignore[reportUnknownMemberType]
 
             flat_samples: onp.Array2D[np.float64] = sampler.get_chain(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
