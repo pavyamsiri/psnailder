@@ -196,8 +196,12 @@ class AlinderModel:
         """
         R_TEST: Final[float] = 0.5
 
-        b_over_2c = 0.5 * self.b / self.c
-        phase = -b_over_2c + np.sqrt(np.square(b_over_2c) + R_TEST / self.c) if self.c != 0.0 else R_TEST / self.b
+        phase: float
+        if self.c != 0.0:
+            b_over_2c = 0.5 * self.b / self.c
+            phase = -b_over_2c + np.sqrt(np.square(b_over_2c) + R_TEST / self.c)
+        else:
+            phase = R_TEST / self.b
         return phase + self.theta0
 
 
