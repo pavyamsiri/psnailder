@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from psnailder import SpiralFitter, calculate_rmse
+from psnailder import SpiralFitterMCMC, calculate_rmse
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -23,7 +23,7 @@ def test_gaussian_fit_improvement(seed: int) -> None:
     z = rng.normal(loc=0.0, scale=0.2, size=1000)
     vz = rng.normal(loc=0.0, scale=20.0, size=1000)
 
-    fitter = SpiralFitter()
+    fitter = SpiralFitterMCMC()
     dz: float = 0.025
     dvz: float = 2.0
     z_bins = np.arange(-1.2, 1.2 + dz, dz)

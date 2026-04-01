@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from abc import ABC, abstractmethod
 
 import emcee  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
@@ -20,6 +21,7 @@ __all__: Final[Sequence[str]] = [
     "AlinderModel",
     "SpiralFitDiagnostics",
     "SpiralFitter",
+    "SpiralFitterMCMC",
     "generate_initial_background",
 ]
 
@@ -301,7 +303,7 @@ class AlinderModelCollection:
         return 1.0 + alpha_arr * flattening * np.cos(theta_mesh - phase - theta0_arr)
 
 
-class SpiralFitter:
+class SpiralFitter(ABC):
     """A configuration of the Alinder et al 2023 fitting algorithm."""
 
     def __init__(
@@ -590,6 +592,49 @@ class SpiralFitter:
         )
         assert val is not None
         return val
+
+    @abstractmethod
+    def fit_spiral_with_background_gen(
+        self,
+        initial_density: onp.Array2D[np.float64],
+        initial_background: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        use_median: bool,
+        seed: int | None = None,
+    ) -> Generator[SpiralFitDiagnostics]:
+        """Fit a phase spiral to the given vertical phase space map and background.
+
+        Parameters
+        ----------
+        initial_density : Array2D[f64]
+            The initial density.
+        initial_background : Array2D[f64]
+            The initial background.
+        z_mesh : Array2D[f64]
+            The z values for each cell.
+        vz_mesh : Array2D[f64]
+            The Vz values for each cell.
+        use_median : bool
+            Set this flag to use the median sample for each parameter instead of highest probability.
+        seed : int | None
+            The random seed to use or `None` if no seed.
+
+        Returns
+        -------
+        result : SpiralFitDiagnostics
+            The fitting result.
+
+        """
+        ...
+
+
+class SpiralFitterMCMC(SpiralFitter):
+    """A configuration of the Alinder et al 2023 fitting algorithm.
+
+    This implementation uses MCMC to fit the parameters.
+
+    """
 
     def fit_spiral_with_background_gen(
         self,
