@@ -690,14 +690,17 @@ class SpiralFitterMinimizer(SpiralFitter):
                 )
                 p0 = np.clip(old_params + noise, self._param_lo, self._param_hi)
 
-            np.random.seed(seed)
-            res = optimize.minimize(
+            res = optimize.differential_evolution(
                 ln_prob_opt,
-                p0,
-                args=(self, initial_density, background, z_mesh, vz_mesh),
                 bounds=bounds,
+                args=(self, initial_density, background, z_mesh, vz_mesh),
+                seed=seed,
+                popsize=15,  # 15 * n_params = 90 candidate solutions
+                mutation=(0.5, 1),
+                recombination=0.7,
+                tol=1e-5,
+                polish=True,  # runs a local minimizer on the best result at the end
             )
-            np.random.seed(None)
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
 
