@@ -314,9 +314,6 @@ class SpiralFitter(ABC):
     def __init__(
         self,
         *,
-        num_samples: int = 5_000,
-        num_discard: int = 1_000,
-        num_walkers: int = 32,
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
@@ -324,9 +321,6 @@ class SpiralFitter(ABC):
         param_noise: float = 0.01,
         use_density: bool = True,
     ) -> None:
-        self._num_samples: int = num_samples
-        self._num_discard: int = num_discard
-        self._num_walkers: int = num_walkers
         self._max_iterations: int | None = max_iterations
         self._smoothing_func: _SmoothingFunc = SpiralFitter._default_smoothing if smoothing_func is None else smoothing_func
         self._param_lo: onp.Array1D[np.float64] = np.array([param.lo for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
@@ -471,6 +465,30 @@ class SpiralFitterMCMC(SpiralFitter):
     This implementation uses MCMC to fit the parameters.
 
     """
+
+    def __init__(
+        self,
+        num_samples: int = 5_000,
+        num_discard: int = 1_000,
+        num_walkers: int = 32,
+        max_iterations: int | None = 50,
+        smoothing_func: _SmoothingFunc | None = None,
+        param_lo: dict[_ParamName, float] | None = None,
+        param_hi: dict[_ParamName, float] | None = None,
+        param_noise: float = 0.01,
+        use_density: bool = True,
+    ) -> None:
+        super().__init__(
+            max_iterations=max_iterations,
+            smoothing_func=smoothing_func,
+            param_lo=param_lo,
+            param_hi=param_hi,
+            param_noise=param_noise,
+            use_density=use_density,
+        )
+        self._num_samples: int = num_samples
+        self._num_discard: int = num_discard
+        self._num_walkers: int = num_walkers
 
     def fit_spiral_with_background_gen(
         self,
@@ -620,6 +638,26 @@ class SpiralFitterMinimizer(SpiralFitter):
 
     """
 
+    def __init__(
+        self,
+        objective: Literal["prob", "error"] = "prob",
+        max_iterations: int | None = 50,
+        smoothing_func: _SmoothingFunc | None = None,
+        param_lo: dict[_ParamName, float] | None = None,
+        param_hi: dict[_ParamName, float] | None = None,
+        param_noise: float = 0.01,
+        use_density: bool = True,
+    ) -> None:
+        super().__init__(
+            max_iterations=max_iterations,
+            smoothing_func=smoothing_func,
+            param_lo=param_lo,
+            param_hi=param_hi,
+            param_noise=param_noise,
+            use_density=use_density,
+        )
+        self._objective: Literal["prob", "error"] = objective
+
     def fit_spiral_with_background_gen(
         self,
         initial_density: onp.Array2D[np.float64],
@@ -665,15 +703,16 @@ class SpiralFitterMinimizer(SpiralFitter):
         converged: bool = False
         num_iterations: int = 0
 
+        objective_function = ln_prob_opt if self._objective == "prob" else rmse_opt
+
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
-            popsize = max(1, self._num_walkers // _NUM_PARAMETERS)
             res = optimize.differential_evolution(
-                ln_prob_opt,
+                objective_function,
                 bounds=bounds,  # pyright: ignore[reportArgumentType]
                 args=(self, initial_density, background, z_mesh, vz_mesh),
                 seed=seed,
-                popsize=popsize,
+                popsize=15,
                 mutation=(0.5, 1),
                 recombination=0.7,
                 tol=1e-5,
@@ -846,6 +885,52 @@ def ln_prob_opt(
     """
     collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
     return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
+
+
+def rmse_opt(
+    parameters: onp.Array1D[np.float64],
+    fitter: SpiralFitter,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Calculate RMSE for use with :func:`scipy.optimize.minimize`.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
+    fitter : SpiralFitter
+        The fitting configuration.
+    counts : Array2D[f64]
+        The observed data in a grid.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    rmse : float
+        The RMSE between the model and the data.
+
+    """
+    _ = fitter
+    model = AlinderModel(
+        alpha=parameters[0],
+        b=parameters[0],
+        c=parameters[0],
+        theta0=parameters[0],
+        scale_factor=parameters[0],
+        rho=parameters[0],
+        background=background,
+    )
+    mask = _mask(z_mesh, vz_mesh)
+    predict = model.fit(z_mesh, vz_mesh)
+    return _calculate_rmse_with_mask(counts, predict, mask)
 
 
 def generate_initial_background(
