@@ -155,14 +155,21 @@ class AlinderModel:
             The perturbation.
 
         """
-        r_mesh = np.hypot(z_mesh, vz_mesh / self.scale_factor)
-        theta_mesh = np.arctan2(vz_mesh, self.scale_factor * z_mesh)
+        scaled_z = np.multiply(z_mesh, self.scale_factor)
+        scaled_vz = vz_mesh * np.reciprocal(self.scale_factor)
+        r_mesh = np.hypot(z_mesh, scaled_vz)
+        theta_mesh = np.arctan2(vz_mesh, scaled_z)
 
-        phase: onp.Array2D[np.float64]
-        if self.c != 0.0:
-            phase = -0.5 * self.b / self.c + np.sqrt(np.square(0.5 * self.b / self.c) + r_mesh / self.c)
+        abs_b = abs(self.b)
+        abs_c = abs(self.c)
+        sign = np.sign(self.b) if self.b != 0.0 else 1.0
+
+        if abs_c != 0.0:
+            half_b_over_c = 0.5 * abs_b / abs_c
+            phase = sign * (-half_b_over_c + np.sqrt(np.square(half_b_over_c) + r_mesh / abs_c))
         else:
-            phase = r_mesh / self.b
+            phase = sign * (r_mesh / abs_b)
+
         flattening = special.expit((r_mesh - self.rho) / 0.1)
         return 1.0 + self.alpha * flattening * np.cos(theta_mesh - phase - self.theta0)
 
@@ -183,7 +190,7 @@ class AlinderModel:
 
         """
         pert = self.perturbation(z_mesh, vz_mesh)
-        return pert * self.background
+        return np.multiply(pert, self.background)
 
     def phase_angle(self) -> float:
         """Calculate the phase angle.
@@ -203,6 +210,16 @@ class AlinderModel:
         else:
             phase = R_TEST / self.b
         return phase + self.theta0
+
+    def __repr__(self) -> str:
+        fields: list[str] = []
+        fields.append(f"alpha={self.alpha}")
+        fields.append(f"b={self.b}")
+        fields.append(f"c={self.c}")
+        fields.append(f"theta0={np.rad2deg(self.theta0)} deg")
+        fields.append(f"scale_factor={self.scale_factor}")
+        fields.append(f"rho={self.rho}")
+        return self.__class__.__qualname__ + "(" + ", ".join(fields) + ")"
 
 
 @dataclass
@@ -289,21 +306,27 @@ class AlinderModelCollection:
         scale_factor_arr = self.scale_factor
         rho_arr = self.rho
 
+        abs_b_arr = np.abs(b_arr)
+        abs_c_arr = np.abs(c_arr)
+        sign_arr = np.sign(b_arr)
+        sign_arr[sign_arr == 0.0] = 1.0
+
         z_mesh_broadcast = z_mesh[:, :, None]
         vz_mesh_broadcast = vz_mesh[:, :, None]
         r_mesh = np.hypot(z_mesh_broadcast, vz_mesh_broadcast / scale_factor_arr)
         theta_mesh = np.arctan2(vz_mesh_broadcast, scale_factor_arr * z_mesh_broadcast)
 
         phase: onp.Array3D[np.float64] = np.zeros_like(r_mesh)
-        nonzero_mask = c_arr != 0.0
-        discriminant = (
-            np.square(0.5 * b_arr[nonzero_mask & valid] / c_arr[nonzero_mask & valid])
-            + r_mesh[:, :, nonzero_mask & valid] / c_arr[nonzero_mask & valid]
-        )
-        phase[:, :, nonzero_mask & valid] = -0.5 * b_arr[nonzero_mask & valid] / c_arr[nonzero_mask & valid] + np.sqrt(
-            discriminant
-        )
-        phase[:, :, ~nonzero_mask & valid] = r_mesh[:, :, ~nonzero_mask & valid] / b_arr[~nonzero_mask & valid]
+        nonzero_mask = abs_c_arr != 0.0
+
+        nonzero_value_mask = nonzero_mask & valid
+        half_b_over_c = 0.5 * abs_b_arr[nonzero_value_mask] / abs_c_arr[nonzero_value_mask]
+        discriminant = np.square(half_b_over_c) + r_mesh[:, :, nonzero_value_mask] / abs_c_arr[nonzero_value_mask]
+        phase[:, :, nonzero_value_mask] = sign_arr[nonzero_value_mask] * (-half_b_over_c + np.sqrt(discriminant))
+
+        zero_value_mask = ~nonzero_mask & valid
+        phase[:, :, zero_value_mask] = sign_arr[zero_value_mask] * (r_mesh[:, :, zero_value_mask] / abs_b_arr[zero_value_mask])
+
         flattening = special.expit((r_mesh - rho_arr) / 0.1)
         return 1.0 + alpha_arr * flattening * np.cos(theta_mesh - phase - theta0_arr)
 

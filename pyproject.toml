@@ -28,6 +28,7 @@ reportMissingTypeArgument = true
 reportUnknownArgumentType = true
 reportUnknownParameterType = true
 reportUnknownVariableType = true
+pythonVersion = "3.13"
 exclude = [".venv"]
 venvPath = "."
 venv = ".venv"
