@@ -1,11 +1,9 @@
 """A module that implements  the phase spiral fitting algorithm described in Alinder et al. 2023."""
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from abc import ABC, abstractmethod
-
 import emcee  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
 from scipy import ndimage, special, stats, optimize
@@ -13,10 +11,7 @@ from scipy import ndimage, special, stats, optimize
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
     from typing import Final, Literal
-
     from optype import numpy as onp
-
-
 __all__: Final[Sequence[str]] = [
     "AlinderModel",
     "SpiralFitDiagnostics",
@@ -30,7 +25,6 @@ __all__: Final[Sequence[str]] = [
 @dataclass
 class _ParamBounds:
     """A class to describe the bounds of a parameter.
-
     Attributes
     ----------
     name : ParamName
@@ -39,7 +33,6 @@ class _ParamBounds:
         The lower bound.
     hi : float
         The higher bound.
-
     """
 
     name: _ParamName
@@ -62,6 +55,7 @@ _C_INDEX: Final[int] = 2
 _THETA0_INDEX: Final[int] = 3
 _SCALE_FACTOR_INDEX: Final[int] = 4
 _RHO_INDEX: Final[int] = 5
+_N_STARTS: Final[int] = 20
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
@@ -70,7 +64,6 @@ type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
 @dataclass
 class SpiralFitDiagnostics:
     """A result of the spiral fitting process.
-
     Attributes
     ----------
     initial_model : AlinderModel
@@ -93,7 +86,6 @@ class SpiralFitDiagnostics:
         The maximum number of iterations.
     converged : bool
         A flag signifying whether fitting converged before the fitting process stopped.
-
     """
 
     initial_model: AlinderModel
@@ -111,7 +103,6 @@ class SpiralFitDiagnostics:
 @dataclass
 class AlinderModel:
     """A Alinder et al. 2023 phase spiral model.
-
     Attributes
     ----------
     alpha : float
@@ -128,7 +119,6 @@ class AlinderModel:
         The flattening function distance.
     background : Array2D[f64]
         The background.
-
     """
 
     alpha: float
@@ -141,68 +131,56 @@ class AlinderModel:
 
     def perturbation(self, z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         """Calculate the perturbation.
-
         Parameters
         ----------
         z_mesh : Array2D[f64]
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
-
         Returns
         -------
         perturbation : Array2D[f64]
             The perturbation.
-
         """
         scaled_z = np.multiply(z_mesh, self.scale_factor)
         scaled_vz = vz_mesh * np.reciprocal(self.scale_factor)
         r_mesh = np.hypot(z_mesh, scaled_vz)
         theta_mesh = np.arctan2(vz_mesh, scaled_z)
-
         abs_b = abs(self.b)
         abs_c = abs(self.c)
         sign = np.sign(self.b) if self.b != 0.0 else 1.0
-
         if abs_c != 0.0:
             half_b_over_c = 0.5 * abs_b / abs_c
             phase = sign * (-half_b_over_c + np.sqrt(np.square(half_b_over_c) + r_mesh / abs_c))
         else:
             phase = sign * (r_mesh / abs_b)
-
         flattening = special.expit((r_mesh - self.rho) / 0.1)
         return 1.0 + self.alpha * flattening * np.cos(theta_mesh - phase - self.theta0)
 
     def fit(self, z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         """Calculate the predicted data/fit.
-
         Parameters
         ----------
         z_mesh : Array2D[f64]
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
-
         Returns
         -------
         fit : Array2D[f64]
             The prediction.
-
         """
         pert = self.perturbation(z_mesh, vz_mesh)
         return np.multiply(pert, self.background)
 
     def phase_angle(self) -> float:
         """Calculate the phase angle.
-
         Returns
         -------
         phase_angle : float
             The phase angle in radians.
-
         """
         R_TEST: Final[float] = 0.5
-
         phase: float
         if self.c != 0.0:
             b_over_2c = 0.5 * self.b / self.c
@@ -219,20 +197,19 @@ class AlinderModel:
         fields.append(f"theta0={np.rad2deg(self.theta0)} deg")
         fields.append(f"scale_factor={self.scale_factor}")
         fields.append(f"rho={self.rho}")
+        fields.append(f"phase={np.rad2deg(self.phase_angle())} deg")
         return self.__class__.__qualname__ + "(" + ", ".join(fields) + ")"
 
 
 @dataclass
 class AlinderModelCollection:
     """A collection of Alinder et al. 2023 phase spiral models.
-
     Attributes
     ----------
     parameters : Array2D[f64]
         The model parameters in the shape (num_walkers, 6).
     background : Array2D[f64]
         The background.
-
     """
 
     parameters: onp.Array2D[np.float64]
@@ -283,7 +260,6 @@ class AlinderModelCollection:
         valid: onp.Array1D[np.bool_],
     ) -> onp.Array3D[np.float64]:
         """Calculate the perturbation.
-
         Parameters
         ----------
         z_mesh : Array2D[f64]
@@ -292,12 +268,10 @@ class AlinderModelCollection:
             The Vz values for each cell.
         valid : Array2D[bool]
             A mask over the valid parameters.
-
         Returns
         -------
         perturbation : Array2D[f64]
             The perturbation.
-
         """
         alpha_arr = self.alpha
         b_arr = self.b
@@ -305,28 +279,22 @@ class AlinderModelCollection:
         theta0_arr = self.theta0
         scale_factor_arr = self.scale_factor
         rho_arr = self.rho
-
         abs_b_arr = np.abs(b_arr)
         abs_c_arr = np.abs(c_arr)
         sign_arr = np.sign(b_arr)
         sign_arr[sign_arr == 0.0] = 1.0
-
         z_mesh_broadcast = z_mesh[:, :, None]
         vz_mesh_broadcast = vz_mesh[:, :, None]
         r_mesh = np.hypot(z_mesh_broadcast, vz_mesh_broadcast / scale_factor_arr)
         theta_mesh = np.arctan2(vz_mesh_broadcast, scale_factor_arr * z_mesh_broadcast)
-
         phase: onp.Array3D[np.float64] = np.zeros_like(r_mesh)
         nonzero_mask = abs_c_arr != 0.0
-
         nonzero_value_mask = nonzero_mask & valid
         half_b_over_c = 0.5 * abs_b_arr[nonzero_value_mask] / abs_c_arr[nonzero_value_mask]
         discriminant = np.square(half_b_over_c) + r_mesh[:, :, nonzero_value_mask] / abs_c_arr[nonzero_value_mask]
         phase[:, :, nonzero_value_mask] = sign_arr[nonzero_value_mask] * (-half_b_over_c + np.sqrt(discriminant))
-
         zero_value_mask = ~nonzero_mask & valid
         phase[:, :, zero_value_mask] = sign_arr[zero_value_mask] * (r_mesh[:, :, zero_value_mask] / abs_b_arr[zero_value_mask])
-
         flattening = special.expit((r_mesh - rho_arr) / 0.1)
         return 1.0 + alpha_arr * flattening * np.cos(theta_mesh - phase - theta0_arr)
 
@@ -350,27 +318,22 @@ class SpiralFitter(ABC):
         self._param_hi: onp.Array1D[np.float64] = np.array([param.hi for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._use_density: bool = use_density
         self._param_noise: float = param_noise
-
         default_lo: dict[_ParamName, float] = {p.name: p.lo for p in _DEFAULT_PARAM_BOUNDS}
         default_hi: dict[_ParamName, float] = {p.name: p.hi for p in _DEFAULT_PARAM_BOUNDS}
-
         if param_lo is not None:
             if unknown := param_lo.keys() - default_lo.keys():
                 msg = f"Unknown parameter names in `param_lo`: {unknown}"
                 raise ValueError(msg)
             default_lo.update(param_lo)
-
         if param_hi is not None:
             if unknown := param_hi.keys() - default_hi.keys():
                 msg = f"Unknown parameter names in `param_hi`: {unknown}"
                 raise ValueError(msg)
             default_hi.update(param_hi)
-
         for name in default_lo:
             if default_lo[name] >= default_hi[name]:
                 msg = f"param_lo[{name!r}] must be strictly less than param_hi[{name!r}]"
                 raise ValueError(msg)
-
         self._param_lo = np.array([default_lo[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi = np.array([default_hi[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
 
@@ -380,15 +343,12 @@ class SpiralFitter(ABC):
 
     def _ln_prior(self, models: AlinderModelCollection) -> onp.Array1D[np.float64]:
         in_bounds: onp.Array1D[np.bool_] = np.ones(models.num_walkers, dtype=np.bool_)
-
         for index in range(_NUM_PARAMETERS):
             in_bounds &= np.logical_and(
                 models.parameters[:, index] >= self._param_lo[index], models.parameters[:, index] <= self._param_hi[index]
             )
-
         prior = np.zeros_like(in_bounds, dtype=np.float64)
         prior[~in_bounds] = -np.inf
-
         return prior
 
     def ln_prob(
@@ -403,7 +363,6 @@ class SpiralFitter(ABC):
         pert = models.perturbation(z_mesh, vz_mesh, np.isfinite(ln_prior))
         mask = _mask(z_mesh, vz_mesh)
         valid = background > 0
-
         predicted = pert[valid, :] * background[valid, None]
         denom = np.copy(predicted)
         denom[denom == 0.0] = 1.0
@@ -414,9 +373,7 @@ class SpiralFitter(ABC):
             np.square(residuals) / denom,
             axis=0,
         )
-
         ln_likelihood[~np.isfinite(ln_likelihood)] = -np.inf
-
         return ln_likelihood + ln_prior
 
     def fit_spiral(
@@ -446,10 +403,8 @@ class SpiralFitter(ABC):
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
         vz_mesh, z_mesh = np.meshgrid(vz_centres, z_centres)
-
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=self._use_density)
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
-
         return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, use_median=use_median, seed=seed)
 
     def fit_spiral_with_background(
@@ -484,9 +439,7 @@ class SpiralFitter(ABC):
 
 class SpiralFitterMCMC(SpiralFitter):
     """A configuration of the Alinder et al 2023 fitting algorithm.
-
     This implementation uses MCMC to fit the parameters.
-
     """
 
     def __init__(
@@ -544,7 +497,6 @@ class SpiralFitterMCMC(SpiralFitter):
                 vectorize=True,
             )
             np.random.seed(None)
-
             p0: onp.Array2D[np.float64]
             if best_model is None:
                 p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
@@ -574,9 +526,7 @@ class SpiralFitterMCMC(SpiralFitter):
                     self._param_lo,
                     self._param_hi,
                 )
-
             sampler.run_mcmc(p0, self._num_samples, progress=False)  # pyright: ignore[reportUnknownMemberType]
-
             flat_samples: onp.Array2D[np.float64] = sampler.get_chain(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
             log_probs: onp.Array1D[np.float64] = sampler.get_log_prob(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
             if use_median:
@@ -584,7 +534,6 @@ class SpiralFitterMCMC(SpiralFitter):
             else:
                 best_index = np.argmax(log_probs)
                 best_params = flat_samples[best_index]
-
             current_model = AlinderModel(
                 alpha=best_params[0],
                 b=best_params[1],
@@ -594,10 +543,8 @@ class SpiralFitterMCMC(SpiralFitter):
                 rho=best_params[5],
                 background=background,
             )
-
             if initial_model is None:
                 initial_model = current_model
-
             yield SpiralFitDiagnostics(
                 initial_model=initial_model,
                 final_model=current_model,
@@ -610,7 +557,6 @@ class SpiralFitterMCMC(SpiralFitter):
                 max_iterations=self._max_iterations,
                 converged=converged,
             )
-
             current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
             new_background = self._smoothing_func(initial_density / current_perturbation)
             new_background = new_background / new_background.sum() * initial_density.sum()
@@ -628,12 +574,10 @@ class SpiralFitterMCMC(SpiralFitter):
             best_model = current_model
             best_samples = flat_samples
             best_probs = log_probs
-
         assert initial_model is not None
         assert best_model is not None
         assert best_samples is not None
         assert best_probs is not None
-
         yield SpiralFitDiagnostics(
             initial_model=initial_model,
             final_model=best_model,
@@ -651,19 +595,25 @@ class SpiralFitterMCMC(SpiralFitter):
 class SpiralFitterMinimizer(SpiralFitter):
     """A configuration of the Alinder et al 2023 fitting algorithm.
 
-    This implementation uses scipy.optimize.minimize to fit the parameters.
+    This implementation uses multi-start L-BFGS-B to fit the parameters.
+    ``n_starts`` independent runs are launched from random starting points drawn
+    uniformly within the parameter bounds; the run with the lowest objective
+    value is kept.  This guards against local-minima while still benefiting
+    from the speed of a gradient-based solver.
 
     Unlike the MCMC fitter, there is no posterior distribution to sample from.
-    The ``samples`` and ``log_probs`` fields of :class:`SpiralFitDiagnostics` will
-    therefore each contain a single row/entry representing the optimizer solution.
+    The ``samples`` and ``log_probs`` fields of :class:`SpiralFitDiagnostics`
+    will therefore each contain a single row/entry representing the best
+    optimizer solution found across all starts.
+
     The ``use_median`` parameter has no effect and is accepted only for API
     compatibility with :class:`SpiralFitterMCMC`.
-
     """
 
     def __init__(
         self,
         objective: Literal["prob", "error"] = "prob",
+        n_starts: int = _N_STARTS,
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
@@ -680,6 +630,74 @@ class SpiralFitterMinimizer(SpiralFitter):
             use_density=use_density,
         )
         self._objective: Literal["prob", "error"] = objective
+        self._n_starts: int = n_starts
+
+    def _run_lbfgsb(
+        self,
+        objective_function: Callable[
+            [
+                onp.Array1D[np.float64],
+                SpiralFitter,
+                onp.Array2D[np.float64],
+                onp.Array2D[np.float64],
+                onp.Array2D[np.float64],
+                onp.Array2D[np.float64],
+            ],
+            float,
+        ],
+        background: onp.Array2D[np.float64],
+        initial_density: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        rng: np.random.Generator,
+        warm_start: onp.Array1D[np.float64] | None = None,
+    ) -> optimize.OptimizeResult:
+        """Run multi-start L-BFGS-B and return the best result.
+
+        Parameters
+        ----------
+        objective_function : Callable
+            The scalar objective to minimise (negated log-prob or RMSE).
+        background : Array2D[f64]
+            Current background estimate.
+        initial_density : Array2D[f64]
+            Observed density grid.
+        z_mesh, vz_mesh : Array2D[f64]
+            Phase-space coordinate grids.
+        rng : np.random.Generator
+            Random number generator (for reproducible multi-start draws).
+        warm_start : Array1D[f64] | None
+            If provided, one of the starts is placed at this point (the rest
+            are still drawn uniformly at random).
+
+        Returns
+        -------
+        best_res : OptimizeResult
+            The result with the lowest ``fun`` value across all starts.
+        """
+        bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
+        args = (self, initial_density, background, z_mesh, vz_mesh)
+
+        best_res: optimize.OptimizeResult | None = None
+        for i in range(self._n_starts):
+            if i == 0 and warm_start is not None:
+                x0 = np.clip(warm_start, self._param_lo, self._param_hi)
+            else:
+                x0 = rng.uniform(self._param_lo, self._param_hi)
+
+            res = optimize.minimize(
+                objective_function,
+                x0=x0,
+                args=args,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={"maxiter": 1000, "ftol": 1e-9, "gtol": 1e-7},
+            )
+            if best_res is None or res.fun < best_res.fun:
+                best_res = res
+
+        assert best_res is not None
+        return best_res
 
     def fit_spiral_with_background_gen(
         self,
@@ -705,16 +723,14 @@ class SpiralFitterMinimizer(SpiralFitter):
         use_median : bool
             Unused; accepted for API compatibility with :class:`SpiralFitterMCMC`.
         seed : int | None
-            The random seed to use or `None` if no seed.
+            The random seed for the multi-start draws, or ``None`` for no seed.
 
         Returns
         -------
         result : SpiralFitDiagnostics
             The fitting result.
-
         """
-        bounds: list[tuple[float, float]] = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
-
+        rng = np.random.default_rng(seed)
         mask = _mask(z_mesh, vz_mesh)
         background = initial_background
         best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
@@ -725,24 +741,27 @@ class SpiralFitterMinimizer(SpiralFitter):
         best_probs: onp.Array1D[np.float64] | None = None
         converged: bool = False
         num_iterations: int = 0
-
         objective_function = ln_prob_opt if self._objective == "prob" else rmse_opt
+
+        # Warm-start point: reuse the previous iteration's best params.
+        warm_start: onp.Array1D[np.float64] | None = None
 
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
-            res = optimize.differential_evolution(
+
+            res = self._run_lbfgsb(
                 objective_function,
-                bounds=bounds,  # pyright: ignore[reportArgumentType]
-                args=(self, initial_density, background, z_mesh, vz_mesh),
-                seed=seed,
-                popsize=15,
-                mutation=(0.5, 1),
-                recombination=0.7,
-                tol=1e-5,
-                polish=True,
+                background,
+                initial_density,
+                z_mesh,
+                vz_mesh,
+                rng,
+                warm_start=warm_start,
             )
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
+            # Update warm-start for next outer iteration.
+            warm_start = best_params
 
             # Represent the single optimiser solution as a one-row "sample" array so
             # the rest of the pipeline (which expects MCMC-style arrays) works unchanged.
@@ -759,7 +778,6 @@ class SpiralFitterMinimizer(SpiralFitter):
                 rho=best_params[_RHO_INDEX],
                 background=background,
             )
-
             if initial_model is None:
                 initial_model = current_model
 
@@ -846,7 +864,6 @@ def ln_prob_mcmc(
     vz_mesh: onp.Array2D[np.float64],
 ) -> onp.Array1D[np.float64]:
     """Log likelihood probability for the MCMC sampler (vectorised over walkers).
-
     Parameters
     ----------
     parameters : Array2D[f64]
@@ -861,12 +878,10 @@ def ln_prob_mcmc(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
-
     Returns
     -------
     log_likelihood : Array1D[f64]
         The log of the likelihood for each walker.
-
     """
     collection = AlinderModelCollection(parameters=parameters, background=background)
     return fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)
@@ -899,12 +914,10 @@ def ln_prob_opt(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
-
     Returns
     -------
     neg_log_likelihood : float
         The negated log-probability.
-
     """
     collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
     return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
@@ -934,21 +947,19 @@ def rmse_opt(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
-
     Returns
     -------
     rmse : float
         The RMSE between the model and the data.
-
     """
     _ = fitter
     model = AlinderModel(
-        alpha=parameters[0],
-        b=parameters[0],
-        c=parameters[0],
-        theta0=parameters[0],
-        scale_factor=parameters[0],
-        rho=parameters[0],
+        alpha=parameters[_ALPHA_INDEX],
+        b=parameters[_B_INDEX],
+        c=parameters[_C_INDEX],
+        theta0=parameters[_THETA0_INDEX],
+        scale_factor=parameters[_SCALE_FACTOR_INDEX],
+        rho=parameters[_RHO_INDEX],
         background=background,
     )
     mask = _mask(z_mesh, vz_mesh)
@@ -964,7 +975,6 @@ def generate_initial_background(
     density_scale: float,
 ) -> onp.Array2D[np.float64]:
     """Generate a symmetric KDE background as the initial background estimate.
-
     Parameters
     ----------
     z : Array1D[f64]
@@ -977,37 +987,29 @@ def generate_initial_background(
         The Vz values for each cell.
     density_scale : float
         The density normalisation scale.
-
     Returns
     -------
     background : Array2D[f64]
         The symmetric initial background generated by a Gaussian KDE.
-
     """
     z_mirrored = np.concatenate([z, z])
     vz_mirrored = np.concatenate([vz, -vz])
-
     kde = stats.gaussian_kde(np.vstack([z_mirrored, vz_mirrored]), bw_method="scott")
-
     grid_points = np.vstack([z_mesh.ravel(), vz_mesh.ravel()])
     estimated_background = kde(grid_points).reshape(z_mesh.shape)
-
     return estimated_background / estimated_background.sum() * density_scale
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
     """Unwrap last yield value from generator.
-
     Parameters
     ----------
     gen : Generator[T]
         The generator.
-
     Returns
     -------
     val : T | None
         The last yielded value or ``None`` if the generator is empty.
-
     """
     val: T | None = None
     for inner in gen:
