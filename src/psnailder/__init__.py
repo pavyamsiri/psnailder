@@ -402,8 +402,9 @@ class SpiralFitter(ABC):
     ) -> Generator[SpiralFitDiagnostics]:
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
-        vz_mesh, z_mesh = np.meshgrid(vz_centres, z_centres)
+        z_mesh, vz_mesh = np.meshgrid(z_centres, vz_centres)
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=self._use_density)
+        density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
         return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, use_median=use_median, seed=seed)
 
