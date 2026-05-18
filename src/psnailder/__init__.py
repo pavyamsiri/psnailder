@@ -309,13 +309,11 @@ class SpiralFitter(ABC):
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
-        param_noise: float = 0.01,
     ) -> None:
         self._max_iterations: int | None = max_iterations
         self._smoothing_func: _SmoothingFunc = SpiralFitter._default_smoothing if smoothing_func is None else smoothing_func
         self._param_lo: onp.Array1D[np.float64] = np.array([param.lo for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi: onp.Array1D[np.float64] = np.array([param.hi for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
-        self._param_noise: float = param_noise
         default_lo: dict[_ParamName, float] = {p.name: p.lo for p in _DEFAULT_PARAM_BOUNDS}
         default_hi: dict[_ParamName, float] = {p.name: p.hi for p in _DEFAULT_PARAM_BOUNDS}
         if param_lo is not None:
@@ -444,14 +442,12 @@ class SpiralFitterMinimizer(SpiralFitter):
         smoothing_func: _SmoothingFunc | None = None,
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
-        param_noise: float = 0.01,
     ) -> None:
         super().__init__(
             max_iterations=max_iterations,
             smoothing_func=smoothing_func,
             param_lo=param_lo,
             param_hi=param_hi,
-            param_noise=param_noise,
         )
         self._objective: Literal["prob", "error"] = objective
         self._n_starts: int = n_starts
@@ -498,6 +494,7 @@ class SpiralFitterMinimizer(SpiralFitter):
         -------
         best_res : OptimizeResult
             The result with the lowest ``fun`` value across all starts.
+
         """
         bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
         args = (self, initial_density, background, z_mesh, vz_mesh)
