@@ -1,22 +1,25 @@
 """A module that implements  the phase spiral fitting algorithm described in Alinder et al. 2023."""
 
 from __future__ import annotations
+
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from abc import ABC, abstractmethod
-import emcee  # pyright: ignore[reportMissingTypeStubs]
+
 import numpy as np
-from scipy import ndimage, special, stats, optimize
+from scipy import ndimage, optimize, special, stats
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
     from typing import Final, Literal
+
     from optype import numpy as onp
+
+
 __all__: Final[Sequence[str]] = [
     "AlinderModel",
     "SpiralFitDiagnostics",
     "SpiralFitter",
-    "SpiralFitterMCMC",
     "SpiralFitterMinimizer",
     "generate_initial_background",
 ]
@@ -76,8 +79,6 @@ class SpiralFitDiagnostics:
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
-    samples : Array2D[f64]
-        The MCMC samples.
     log_probs : Array1D[f64]
         The log probabilities.
     num_iterations : int
@@ -93,7 +94,6 @@ class SpiralFitDiagnostics:
     data: onp.Array2D[np.float64]
     z_mesh: onp.Array2D[np.float64]
     vz_mesh: onp.Array2D[np.float64]
-    samples: onp.Array2D[np.float64]
     log_probs: onp.Array1D[np.float64]
     num_iterations: int
     max_iterations: int | None
@@ -383,10 +383,9 @@ class SpiralFitter(ABC):
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
-        use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
-        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, use_median=use_median, seed=seed))
+        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed))
         assert val is not None
         return val
 
@@ -397,7 +396,6 @@ class SpiralFitter(ABC):
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
-        use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
@@ -406,7 +404,7 @@ class SpiralFitter(ABC):
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=self._use_density)
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
-        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, use_median=use_median, seed=seed)
+        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
 
     def fit_spiral_with_background(
         self,
@@ -415,13 +413,10 @@ class SpiralFitter(ABC):
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         *,
-        use_median: bool,
         seed: int | None = None,
     ) -> SpiralFitDiagnostics:
         val = _get_value_from_gen(
-            self.fit_spiral_with_background_gen(
-                initial_density, initial_background, z_mesh, vz_mesh, use_median=use_median, seed=seed
-            )
+            self.fit_spiral_with_background_gen(initial_density, initial_background, z_mesh, vz_mesh, seed=seed)
         )
         assert val is not None
         return val
@@ -433,182 +428,14 @@ class SpiralFitter(ABC):
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
-        use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]: ...
-
-
-class SpiralFitterMCMC(SpiralFitter):
-    """A configuration of the Alinder et al 2023 fitting algorithm.
-    This implementation uses MCMC to fit the parameters.
-    """
-
-    def __init__(
-        self,
-        num_samples: int = 5_000,
-        num_discard: int = 1_000,
-        num_walkers: int = 32,
-        max_iterations: int | None = 50,
-        smoothing_func: _SmoothingFunc | None = None,
-        param_lo: dict[_ParamName, float] | None = None,
-        param_hi: dict[_ParamName, float] | None = None,
-        param_noise: float = 0.01,
-        use_density: bool = True,
-    ) -> None:
-        super().__init__(
-            max_iterations=max_iterations,
-            smoothing_func=smoothing_func,
-            param_lo=param_lo,
-            param_hi=param_hi,
-            param_noise=param_noise,
-            use_density=use_density,
-        )
-        self._num_samples: int = num_samples
-        self._num_discard: int = num_discard
-        self._num_walkers: int = num_walkers
-
-    def fit_spiral_with_background_gen(
-        self,
-        initial_density: onp.Array2D[np.float64],
-        initial_background: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-        use_median: bool,
-        seed: int | None = None,
-    ) -> Generator[SpiralFitDiagnostics]:
-        rng = np.random.default_rng(seed=seed)
-        mask = _mask(z_mesh, vz_mesh)
-        background = initial_background
-        best_quality: float = _calculate_rmse_with_mask(initial_density, initial_background, mask)
-        initial_model: AlinderModel | None = None
-        current_model: AlinderModel | None = None
-        best_model: AlinderModel | None = None
-        best_samples: onp.Array2D[np.float64] | None = None
-        best_probs: onp.Array1D[np.float64] | None = None
-        converged: bool = False
-        num_iterations: int = 0
-        while self._max_iterations is None or (num_iterations < self._max_iterations):
-            num_iterations += 1
-            np.random.seed(seed)
-            sampler = emcee.EnsembleSampler(
-                self._num_walkers,
-                _NUM_PARAMETERS,
-                ln_prob_mcmc,
-                args=(self, initial_density, background, z_mesh, vz_mesh),
-                vectorize=True,
-            )
-            np.random.seed(None)
-            p0: onp.Array2D[np.float64]
-            if best_model is None:
-                p0 = rng.uniform(self._param_lo, self._param_hi, size=(self._num_walkers, _NUM_PARAMETERS))
-            else:
-                param_range = self._param_hi - self._param_lo
-                noise = rng.normal(
-                    loc=0.0,
-                    scale=param_range * self._param_noise,
-                    size=(self._num_walkers, _NUM_PARAMETERS),
-                )
-                old_params: onp.Array2D[np.float64] = np.tile(
-                    np.array(
-                        [
-                            best_model.alpha,
-                            best_model.b,
-                            best_model.c,
-                            best_model.theta0,
-                            best_model.scale_factor,
-                            best_model.rho,
-                        ],
-                        dtype=np.float64,
-                    ),
-                    (self._num_walkers, 1),
-                )
-                p0 = np.clip(
-                    old_params + noise,
-                    self._param_lo,
-                    self._param_hi,
-                )
-            sampler.run_mcmc(p0, self._num_samples, progress=False)  # pyright: ignore[reportUnknownMemberType]
-            flat_samples: onp.Array2D[np.float64] = sampler.get_chain(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
-            log_probs: onp.Array1D[np.float64] = sampler.get_log_prob(discard=self._num_discard, flat=True)  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
-            if use_median:
-                best_params = np.median(flat_samples, axis=0)
-            else:
-                best_index = np.argmax(log_probs)
-                best_params = flat_samples[best_index]
-            current_model = AlinderModel(
-                alpha=best_params[0],
-                b=best_params[1],
-                c=best_params[2],
-                theta0=best_params[3],
-                scale_factor=best_params[4],
-                rho=best_params[5],
-                background=background,
-            )
-            if initial_model is None:
-                initial_model = current_model
-            yield SpiralFitDiagnostics(
-                initial_model=initial_model,
-                final_model=current_model,
-                data=initial_density,
-                z_mesh=z_mesh,
-                vz_mesh=vz_mesh,
-                samples=flat_samples,
-                log_probs=log_probs,
-                num_iterations=num_iterations,
-                max_iterations=self._max_iterations,
-                converged=converged,
-            )
-            current_perturbation = current_model.perturbation(z_mesh, vz_mesh)
-            new_background = self._smoothing_func(initial_density / current_perturbation)
-            new_background = new_background / new_background.sum() * initial_density.sum()
-            new_data = current_perturbation * new_background
-            fit_ssr = _calculate_rmse_with_mask(initial_density, new_data, mask)
-            quality = fit_ssr
-            if best_quality <= quality:
-                converged = best_model is not None
-                if best_model is None:
-                    best_model = initial_model
-                    best_samples = flat_samples
-                break
-            best_quality = quality
-            background = new_background
-            best_model = current_model
-            best_samples = flat_samples
-            best_probs = log_probs
-        assert initial_model is not None
-        assert best_model is not None
-        assert best_samples is not None
-        assert best_probs is not None
-        yield SpiralFitDiagnostics(
-            initial_model=initial_model,
-            final_model=best_model,
-            data=initial_density,
-            z_mesh=z_mesh,
-            vz_mesh=vz_mesh,
-            samples=best_samples,
-            log_probs=best_probs,
-            num_iterations=num_iterations,
-            max_iterations=self._max_iterations,
-            converged=converged,
-        )
 
 
 class SpiralFitterMinimizer(SpiralFitter):
     """A configuration of the Alinder et al 2023 fitting algorithm.
 
-    This implementation uses multi-start L-BFGS-B to fit the parameters.
-    ``n_starts`` independent runs are launched from random starting points drawn
-    uniformly within the parameter bounds; the run with the lowest objective
-    value is kept.  This guards against local-minima while still benefiting
-    from the speed of a gradient-based solver.
-
-    Unlike the MCMC fitter, there is no posterior distribution to sample from.
-    The ``samples`` and ``log_probs`` fields of :class:`SpiralFitDiagnostics`
-    will therefore each contain a single row/entry representing the best
-    optimizer solution found across all starts.
-
-    The ``use_median`` parameter has no effect and is accepted only for API
-    compatibility with :class:`SpiralFitterMCMC`.
+    This implementation uses a global optimizer to fit the parameters.
     """
 
     def __init__(
@@ -706,7 +533,6 @@ class SpiralFitterMinimizer(SpiralFitter):
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
-        use_median: bool,
         seed: int | None = None,
     ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space map and background.
@@ -738,8 +564,7 @@ class SpiralFitterMinimizer(SpiralFitter):
         initial_model: AlinderModel | None = None
         current_model: AlinderModel | None = None
         best_model: AlinderModel | None = None
-        best_samples: onp.Array2D[np.float64] | None = None
-        best_probs: onp.Array1D[np.float64] | None = None
+        log_probs_list: list[float] = []
         converged: bool = False
         num_iterations: int = 0
         objective_function = ln_prob_opt if self._objective == "prob" else rmse_opt
@@ -764,11 +589,8 @@ class SpiralFitterMinimizer(SpiralFitter):
             # Update warm-start for next outer iteration.
             warm_start = best_params
 
-            # Represent the single optimiser solution as a one-row "sample" array so
-            # the rest of the pipeline (which expects MCMC-style arrays) works unchanged.
-            flat_samples: onp.Array2D[np.float64] = best_params.reshape(1, _NUM_PARAMETERS)
             # res.fun is the *negated* log-prob (we minimise -ln_prob), so negate back.
-            log_probs: onp.Array1D[np.float64] = np.array([-res.fun], dtype=np.float64)
+            log_probs_list.append(-res.fun)
 
             current_model = AlinderModel(
                 alpha=best_params[_ALPHA_INDEX],
@@ -788,8 +610,7 @@ class SpiralFitterMinimizer(SpiralFitter):
                 data=initial_density,
                 z_mesh=z_mesh,
                 vz_mesh=vz_mesh,
-                samples=flat_samples,
-                log_probs=log_probs,
+                log_probs=np.array(log_probs_list, dtype=np.float64),
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
                 converged=converged,
@@ -807,20 +628,14 @@ class SpiralFitterMinimizer(SpiralFitter):
                 if best_model is None:
                     # First iteration was already the best; treat initial model as best.
                     best_model = initial_model
-                    best_samples = flat_samples
-                    best_probs = log_probs
                 break
 
             best_quality = quality
             background = new_background
             best_model = current_model
-            best_samples = flat_samples
-            best_probs = log_probs
 
         assert initial_model is not None
         assert best_model is not None
-        assert best_samples is not None
-        assert best_probs is not None
 
         yield SpiralFitDiagnostics(
             initial_model=initial_model,
@@ -828,8 +643,7 @@ class SpiralFitterMinimizer(SpiralFitter):
             data=initial_density,
             z_mesh=z_mesh,
             vz_mesh=vz_mesh,
-            samples=best_samples,
-            log_probs=best_probs,
+            log_probs=np.array(log_probs_list, dtype=np.float64),
             num_iterations=num_iterations,
             max_iterations=self._max_iterations,
             converged=converged,
