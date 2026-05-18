@@ -310,13 +310,11 @@ class SpiralFitter(ABC):
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
         param_noise: float = 0.01,
-        use_density: bool = True,
     ) -> None:
         self._max_iterations: int | None = max_iterations
         self._smoothing_func: _SmoothingFunc = SpiralFitter._default_smoothing if smoothing_func is None else smoothing_func
         self._param_lo: onp.Array1D[np.float64] = np.array([param.lo for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi: onp.Array1D[np.float64] = np.array([param.hi for param in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
-        self._use_density: bool = use_density
         self._param_noise: float = param_noise
         default_lo: dict[_ParamName, float] = {p.name: p.lo for p in _DEFAULT_PARAM_BOUNDS}
         default_hi: dict[_ParamName, float] = {p.name: p.hi for p in _DEFAULT_PARAM_BOUNDS}
@@ -401,7 +399,7 @@ class SpiralFitter(ABC):
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
         z_mesh, vz_mesh = np.meshgrid(z_centres, vz_centres)
-        density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=self._use_density)
+        density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=False)
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
         return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
@@ -447,7 +445,6 @@ class SpiralFitterMinimizer(SpiralFitter):
         param_lo: dict[_ParamName, float] | None = None,
         param_hi: dict[_ParamName, float] | None = None,
         param_noise: float = 0.01,
-        use_density: bool = True,
     ) -> None:
         super().__init__(
             max_iterations=max_iterations,
@@ -455,7 +452,6 @@ class SpiralFitterMinimizer(SpiralFitter):
             param_lo=param_lo,
             param_hi=param_hi,
             param_noise=param_noise,
-            use_density=use_density,
         )
         self._objective: Literal["prob", "error"] = objective
         self._n_starts: int = n_starts
