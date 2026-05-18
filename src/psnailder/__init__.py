@@ -399,7 +399,7 @@ class SpiralFitter(ABC):
         z_mesh, vz_mesh = np.meshgrid(z_centres, vz_centres)
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=False)
         density = density.T
-        background = generate_initial_background(z, vz, z_mesh, vz_mesh, density.sum())
+        background = generate_initial_background(z, vz, z_mesh, vz_mesh)
         return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
 
     def fit_spiral_with_background(
@@ -663,38 +663,6 @@ def _calculate_rmse_with_mask(
     return np.sqrt(np.mean(np.square(mask * (data - estimate))))
 
 
-def ln_prob_mcmc(
-    parameters: onp.Array2D[np.float64],
-    fitter: SpiralFitter,
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-) -> onp.Array1D[np.float64]:
-    """Log likelihood probability for the MCMC sampler (vectorised over walkers).
-    Parameters
-    ----------
-    parameters : Array2D[f64]
-        Parameter matrix of shape ``(num_walkers, 6)``.
-    fitter : SpiralFitter
-        The fitting configuration.
-    counts : Array2D[f64]
-        The observed data in a grid.
-    background : Array2D[f64]
-        The background.
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
-    Returns
-    -------
-    log_likelihood : Array1D[f64]
-        The log of the likelihood for each walker.
-    """
-    collection = AlinderModelCollection(parameters=parameters, background=background)
-    return fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)
-
-
 def ln_prob_opt(
     parameters: onp.Array1D[np.float64],
     fitter: SpiralFitter,
@@ -780,7 +748,6 @@ def generate_initial_background(
     vz: onp.Array1D[np.float64],
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
-    density_scale: float,
 ) -> onp.Array2D[np.float64]:
     """Generate a symmetric KDE background as the initial background estimate.
     Parameters
@@ -804,8 +771,7 @@ def generate_initial_background(
     vz_mirrored = np.concatenate([vz, -vz])
     kde = stats.gaussian_kde(np.vstack([z_mirrored, vz_mirrored]), bw_method="scott")
     grid_points = np.vstack([z_mesh.ravel(), vz_mesh.ravel()])
-    estimated_background = kde(grid_points).reshape(z_mesh.shape)
-    return estimated_background / estimated_background.sum() * density_scale
+    return kde(grid_points).reshape(z_mesh.shape)
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
