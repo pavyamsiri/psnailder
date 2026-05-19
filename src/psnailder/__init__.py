@@ -189,6 +189,17 @@ class AlinderModel:
             phase = R_TEST / self.b
         return phase + self.theta0
 
+    def parameter_array(self) -> onp.Array1D[np.float64]:
+        """Return the parameters as a 1D array.
+
+        Returns
+        -------
+        parameters : Array1D[f64]
+            The parameters.
+
+        """
+        return np.array([self.alpha, self.b, self.c, self.theta0, self.scale_factor, self.rho], dtype=np.float64)
+
     def __repr__(self) -> str:
         fields: list[str] = []
         fields.append(f"alpha={self.alpha}")
