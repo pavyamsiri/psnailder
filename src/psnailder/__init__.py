@@ -100,36 +100,6 @@ class SpiralFitDiagnostics:
     max_iterations: int | None
     converged: bool
 
-    def pvalue(self) -> float:
-        """Calculate the likelihood ratio with respect to the null model and return its p-value.
-
-        Parameters
-        ----------
-        pvalue : float
-            The p-value representing the probability that the null model is likely over the spiral model.
-
-        """
-        parameters = self.final_model.parameter_array()
-        null_parameters = np.copy(parameters)
-        null_parameters[_ALPHA_INDEX] = 0.0
-        ln_like_alt = ln_likelihood(
-            parameters,
-            self.data,
-            self.final_model.background,
-            self.z_mesh,
-            self.vz_mesh,
-        )
-        ln_like_null = ln_likelihood(
-            null_parameters,
-            self.data,
-            self.final_model.background,
-            self.z_mesh,
-            self.vz_mesh,
-        )
-
-        lmbd = -2.0 * (ln_like_null - ln_like_alt)
-        return stats.chi2.sf(lmbd, df=1)
-
 
 @dataclass
 class AlinderModel:
@@ -231,6 +201,45 @@ class AlinderModel:
         """
         return np.array([self.alpha, self.b, self.c, self.theta0, self.scale_factor, self.rho], dtype=np.float64)
 
+    def pvalue(self, data: onp.Array2D[np.float64], z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> float:
+        """Calculate the likelihood ratio with respect to the null model and return its p-value.
+
+        Parameters
+        ----------
+        data : Array2D[f64]
+            The observed data.
+        z_mesh : Array2D[f64]
+            The z values for each cell.
+        vz_mesh : Array2D[f64]
+            The Vz values for each cell.
+
+        Returns
+        -------
+        pvalue : float
+            The p-value representing the probability that the null model is likely over the spiral model.
+
+        """
+        parameters = self.parameter_array()
+        null_parameters = np.copy(parameters)
+        null_parameters[_ALPHA_INDEX] = 0.0
+        ln_like_alt = ln_likelihood(
+            parameters,
+            data,
+            self.background,
+            z_mesh,
+            vz_mesh,
+        )
+        ln_like_null = ln_likelihood(
+            null_parameters,
+            data,
+            self.background,
+            z_mesh,
+            vz_mesh,
+        )
+
+        lmbd = -2.0 * (ln_like_null - ln_like_alt)
+        return stats.chi2.sf(lmbd, df=1)
+
     def __repr__(self) -> str:
         fields: list[str] = []
         fields.append(f"alpha={self.alpha}")
@@ -302,6 +311,7 @@ class AlinderModelCollection:
         valid: onp.Array1D[np.bool_],
     ) -> onp.Array3D[np.float64]:
         """Calculate the perturbation.
+
         Parameters
         ----------
         z_mesh : Array2D[f64]
@@ -310,10 +320,12 @@ class AlinderModelCollection:
             The Vz values for each cell.
         valid : Array2D[bool]
             A mask over the valid parameters.
+
         Returns
         -------
         perturbation : Array2D[f64]
             The perturbation.
+
         """
         alpha_arr = self.alpha
         b_arr = self.b
