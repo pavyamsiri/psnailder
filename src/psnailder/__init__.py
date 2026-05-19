@@ -22,6 +22,7 @@ __all__: Final[Sequence[str]] = [
     "SpiralFitter",
     "SpiralFitterMinimizer",
     "generate_initial_background",
+    "ln_likelihood",
 ]
 
 
@@ -708,6 +709,58 @@ def ln_prob_opt(
     """
     collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
     return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
+
+
+def ln_likelihood(
+    parameters: onp.Array1D[np.float64],
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """The log-likelihood.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
+    counts : Array2D[f64]
+        The observed data in a grid.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    log_likelihood : float
+        The negated log-likelihood.
+
+    """
+    model = AlinderModel(
+        alpha=parameters[_ALPHA_INDEX],
+        b=parameters[_B_INDEX],
+        c=parameters[_C_INDEX],
+        theta0=parameters[_THETA0_INDEX],
+        scale_factor=parameters[_SCALE_FACTOR_INDEX],
+        rho=parameters[_RHO_INDEX],
+        background=background,
+    )
+    pert = model.perturbation(z_mesh, vz_mesh)
+    mask = _mask(z_mesh, vz_mesh)
+    valid = background > 0
+    predicted = pert[valid] * background[valid]
+    denom = np.copy(predicted)
+    denom[denom == 0.0] = 1.0
+    data = counts[valid]
+    broadcast_mask = mask[valid]
+    residuals = broadcast_mask * (data - predicted)
+    ln_likelihood = -0.5 * np.sum(
+        np.square(residuals) / denom,
+    )
+    return ln_likelihood
 
 
 def rmse_opt(
