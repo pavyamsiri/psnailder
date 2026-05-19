@@ -663,11 +663,12 @@ class SpiralFitter(ABC):
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
+        warm_start: dict[_ParamName, float] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> SpiralFitDiagnostics:
         val = _get_value_from_gen(
-            self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed, improve_background=improve_background)
+            self.fit_spiral_gen(z, vz, z_bins, vz_bins, warm_start=warm_start, seed=seed, improve_background=improve_background)
         )
         assert val is not None
         return val
@@ -679,6 +680,7 @@ class SpiralFitter(ABC):
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
+        warm_start: dict[_ParamName, float] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]:
@@ -689,7 +691,7 @@ class SpiralFitter(ABC):
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh)
         return self.fit_spiral_with_background_gen(
-            density, background, z_mesh, vz_mesh, seed=seed, improve_background=improve_background
+            density, background, z_mesh, vz_mesh, warm_start=warm_start, seed=seed, improve_background=improve_background
         )
 
     def fit_spiral_with_background(
@@ -699,12 +701,19 @@ class SpiralFitter(ABC):
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         *,
+        warm_start: dict[_ParamName, float] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> SpiralFitDiagnostics:
         val = _get_value_from_gen(
             self.fit_spiral_with_background_gen(
-                initial_density, initial_background, z_mesh, vz_mesh, seed=seed, improve_background=improve_background
+                initial_density,
+                initial_background,
+                z_mesh,
+                vz_mesh,
+                warm_start=warm_start,
+                seed=seed,
+                improve_background=improve_background,
             )
         )
         assert val is not None
@@ -717,6 +726,7 @@ class SpiralFitter(ABC):
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
+        warm_start: dict[_ParamName, float] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]: ...
@@ -750,7 +760,7 @@ class SpiralFitterMinimizer(SpiralFitter):
         self,
         objective_function: _ObjectiveFunc,
         rng: np.random.Generator,
-        warm_start: onp.Array1D[np.float64] | None = None,
+        warm_start: dict[_ParamName, float],
     ) -> optimize.OptimizeResult:
         """Run multi-start L-BFGS-B and return the best result.
 
@@ -760,7 +770,7 @@ class SpiralFitterMinimizer(SpiralFitter):
             The scalar objective to minimise (negated log-prob or RMSE).
         rng : np.random.Generator
             Random number generator (for reproducible multi-start draws).
-        warm_start : Array1D[f64] | None
+        warm_start : dict[ParamName, float]
             If provided, one of the starts is placed at this point (the rest
             are still drawn uniformly at random).
 
@@ -772,10 +782,24 @@ class SpiralFitterMinimizer(SpiralFitter):
         """
         bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
 
+        warm_start_list: list[tuple[_ParamName, int]] = [
+            ("alpha", _ALPHA_INDEX),
+            ("b", _B_INDEX),
+            ("c", _C_INDEX),
+            ("theta0", _THETA0_INDEX),
+            ("scale_factor", _SCALE_FACTOR_INDEX),
+            ("rho", _RHO_INDEX),
+        ]
+
         best_res: optimize.OptimizeResult | None = None
         for i in range(self._n_starts):
-            if i == 0 and warm_start is not None:
-                x0 = np.clip(warm_start, self._param_lo, self._param_hi)
+            if i == 0 and len(warm_start) > 0:
+                x0 = np.zeros(_NUM_PARAMETERS, dtype=np.float64)
+                for name, param_index in warm_start_list:
+                    if name in warm_start:
+                        x0[param_index] = warm_start[name]
+                    else:
+                        x0[param_index] = rng.uniform(self._param_lo[param_index], self._param_hi[param_index], size=1)[0]
             else:
                 x0 = rng.uniform(self._param_lo, self._param_hi)
 
@@ -798,6 +822,7 @@ class SpiralFitterMinimizer(SpiralFitter):
         initial_background: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
+        warm_start: dict[_ParamName, float] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]:
@@ -813,6 +838,8 @@ class SpiralFitterMinimizer(SpiralFitter):
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
+        warm_start : dict[ParamName, float]
+            The warm start parameters.
         seed : int | None
             The random seed for the multi-start draws, or ``None`` for no seed.
         improve_background : bool
@@ -843,8 +870,7 @@ class SpiralFitterMinimizer(SpiralFitter):
             case "error":
                 base_objective = wrap_rmse_opt
 
-        # Warm-start point: reuse the previous iteration's best params.
-        warm_start: onp.Array1D[np.float64] | None = None
+        warm_start_dict: dict[_ParamName, float] = {} if warm_start is None else warm_start.copy()
 
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
@@ -861,12 +887,19 @@ class SpiralFitterMinimizer(SpiralFitter):
                     )
                 ),
                 rng,
-                warm_start=warm_start,
+                warm_start=warm_start_dict,
             )
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
             # Update warm-start for next outer iteration.
-            warm_start = best_params
+            warm_start_dict = {
+                "alpha": best_params[_ALPHA_INDEX],
+                "b": best_params[_B_INDEX],
+                "c": best_params[_C_INDEX],
+                "theta0": best_params[_THETA0_INDEX],
+                "scale_factor": best_params[_SCALE_FACTOR_INDEX],
+                "rho": best_params[_RHO_INDEX],
+            }
 
             # res.fun is the *negated* log-prob (we minimise -ln_prob), so negate back.
             log_probs_list.append(-res.fun)

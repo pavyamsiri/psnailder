@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from psnailder import SpiralFitterMinimizer, calculate_rmse
+from psnailder import SpiralFitterMinimizer
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -20,8 +20,8 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     """
     rng = np.random.default_rng(seed)
 
-    z = rng.normal(loc=0.0, scale=0.2, size=10_000)
-    vz = rng.normal(loc=0.0, scale=20.0, size=10_000)
+    z = rng.normal(loc=0.0, scale=0.2, size=100_000)
+    vz = rng.normal(loc=0.0, scale=20.0, size=100_000)
 
     fitter = SpiralFitterMinimizer(objective="prob")
     dz: float = 0.025
@@ -45,8 +45,8 @@ def test_gaussian_fit_improvement_opt_rmse(seed: int) -> None:
     """
     rng = np.random.default_rng(seed)
 
-    z = rng.normal(loc=0.0, scale=0.2, size=10_000)
-    vz = rng.normal(loc=0.0, scale=20.0, size=10_000)
+    z = rng.normal(loc=0.0, scale=0.2, size=100_000)
+    vz = rng.normal(loc=0.0, scale=20.0, size=100_000)
 
     fitter = SpiralFitterMinimizer(objective="error")
     dz: float = 0.025
