@@ -646,8 +646,8 @@ class SpiralFitter(ABC):
                 raise ValueError(msg)
             default_hi.update(param_hi)
         for name in default_lo:
-            if default_lo[name] >= default_hi[name]:
-                msg = f"param_lo[{name!r}] must be strictly less than param_hi[{name!r}]"
+            if default_lo[name] > default_hi[name]:
+                msg = f"param_lo[{name!r}] must be less than or equal to param_hi[{name!r}]"
                 raise ValueError(msg)
         self._param_lo = np.array([default_lo[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
         self._param_hi = np.array([default_hi[p.name] for p in _DEFAULT_PARAM_BOUNDS], dtype=np.float64)
@@ -664,8 +664,11 @@ class SpiralFitter(ABC):
         vz_bins: onp.Array1D[np.float64],
         *,
         seed: int | None = None,
+        improve_background: bool = True,
     ) -> SpiralFitDiagnostics:
-        val = _get_value_from_gen(self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed))
+        val = _get_value_from_gen(
+            self.fit_spiral_gen(z, vz, z_bins, vz_bins, seed=seed, improve_background=improve_background)
+        )
         assert val is not None
         return val
 
@@ -677,6 +680,7 @@ class SpiralFitter(ABC):
         vz_bins: onp.Array1D[np.float64],
         *,
         seed: int | None = None,
+        improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]:
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
@@ -684,7 +688,9 @@ class SpiralFitter(ABC):
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=False)
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh)
-        return self.fit_spiral_with_background_gen(density, background, z_mesh, vz_mesh, seed=seed)
+        return self.fit_spiral_with_background_gen(
+            density, background, z_mesh, vz_mesh, seed=seed, improve_background=improve_background
+        )
 
     def fit_spiral_with_background(
         self,
@@ -694,9 +700,12 @@ class SpiralFitter(ABC):
         vz_mesh: onp.Array2D[np.float64],
         *,
         seed: int | None = None,
+        improve_background: bool = True,
     ) -> SpiralFitDiagnostics:
         val = _get_value_from_gen(
-            self.fit_spiral_with_background_gen(initial_density, initial_background, z_mesh, vz_mesh, seed=seed)
+            self.fit_spiral_with_background_gen(
+                initial_density, initial_background, z_mesh, vz_mesh, seed=seed, improve_background=improve_background
+            )
         )
         assert val is not None
         return val
@@ -709,6 +718,7 @@ class SpiralFitter(ABC):
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         seed: int | None = None,
+        improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]: ...
 
 
@@ -789,6 +799,7 @@ class SpiralFitterMinimizer(SpiralFitter):
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         seed: int | None = None,
+        improve_background: bool = True,
     ) -> Generator[SpiralFitDiagnostics]:
         """Fit a phase spiral to the given vertical phase space map and background.
 
@@ -802,10 +813,11 @@ class SpiralFitterMinimizer(SpiralFitter):
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
-        use_median : bool
-            Unused; accepted for API compatibility with :class:`SpiralFitterMCMC`.
         seed : int | None
             The random seed for the multi-start draws, or ``None`` for no seed.
+        improve_background : bool
+            Whether to iteratively improve the background. If ``False``, the
+            background is fixed to ``initial_background``.
 
         Returns
         -------
@@ -870,6 +882,22 @@ class SpiralFitterMinimizer(SpiralFitter):
             )
             if initial_model is None:
                 initial_model = current_model
+
+            if not improve_background:
+                best_model = current_model
+                converged = True
+                yield SpiralFitDiagnostics(
+                    initial_model=initial_model,
+                    final_model=current_model,
+                    data=initial_density,
+                    z_mesh=z_mesh,
+                    vz_mesh=vz_mesh,
+                    log_probs=np.array(log_probs_list, dtype=np.float64),
+                    num_iterations=num_iterations,
+                    max_iterations=self._max_iterations,
+                    converged=converged,
+                )
+                break
 
             yield SpiralFitDiagnostics(
                 initial_model=initial_model,
