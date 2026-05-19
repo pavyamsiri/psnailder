@@ -100,6 +100,36 @@ class SpiralFitDiagnostics:
     max_iterations: int | None
     converged: bool
 
+    def pvalue(self) -> float:
+        """Calculate the likelihood ratio with respect to the null model and return its p-value.
+
+        Parameters
+        ----------
+        pvalue : float
+            The p-value representing the probability that the null model is likely over the spiral model.
+
+        """
+        parameters = self.final_model.parameter_array()
+        null_parameters = np.copy(parameters)
+        null_parameters[_ALPHA_INDEX] = 0.0
+        ln_like_alt = ln_likelihood(
+            parameters,
+            self.data,
+            self.final_model.background,
+            self.z_mesh,
+            self.vz_mesh,
+        )
+        ln_like_null = ln_likelihood(
+            null_parameters,
+            self.data,
+            self.final_model.background,
+            self.z_mesh,
+            self.vz_mesh,
+        )
+
+        lmbd = -2.0 * (ln_like_null - ln_like_alt)
+        return stats.chi2.sf(lmbd, df=1)
+
 
 @dataclass
 class AlinderModel:
