@@ -63,17 +63,19 @@ _N_STARTS: Final[int] = 20
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
-type _ObjectiveFunc = Callable[
+type _BaseObjectiveFunc = Callable[
     [
         onp.Array1D[np.float64],
-        SpiralFitter,
         onp.Array2D[np.float64],
         onp.Array2D[np.float64],
         onp.Array2D[np.float64],
         onp.Array2D[np.float64],
+        onp.Array1D[np.float64],
+        onp.Array1D[np.float64],
     ],
     float,
 ]
+type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], float]
 
 
 @dataclass
@@ -364,6 +366,259 @@ class AlinderModelCollection:
         return 1.0 + alpha_arr * flattening * np.cos(theta_mesh - phase - theta0_arr)
 
 
+def _mask(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
+    return -special.expit(np.square(z_mesh) + np.square(vz_mesh / 40) - 1.0) + 1.0
+
+
+def _calculate_rmse_with_mask(
+    data: onp.Array2D[np.float64], estimate: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]
+) -> float:
+    return np.sqrt(np.mean(np.square(mask * (data - estimate))))
+
+
+def ln_prior(
+    parameters: onp.Array1D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
+) -> float:
+    """Calculate the log-prior.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        The model parameters.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
+    Returns
+    -------
+    log_prior : float
+        The log-prior.
+    """
+    in_bounds = np.all((parameters >= param_lo) & (parameters <= param_hi))
+    return 0.0 if in_bounds else -np.inf
+
+
+def ln_prior_collection(
+    models: AlinderModelCollection,
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
+) -> onp.Array1D[np.float64]:
+    """Calculate the log-prior.
+
+    Parameters
+    ----------
+    models : AlinderModelCollection
+        The collection of models.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
+    Returns
+    -------
+    log_prior : Array1D[f64]
+        The log-prior for each model.
+    """
+    in_bounds: onp.Array1D[np.bool_] = np.ones(models.num_walkers, dtype=np.bool_)
+    for index in range(_NUM_PARAMETERS):
+        in_bounds &= np.logical_and(
+            models.parameters[:, index] >= param_lo[index], models.parameters[:, index] <= param_hi[index]
+        )
+    prior = np.zeros_like(in_bounds, dtype=np.float64)
+    prior[~in_bounds] = -np.inf
+    return prior
+
+
+def ln_likelihood(
+    parameters: onp.Array1D[np.float64],
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Calculate the log-likelihood.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        The model parameters.
+    counts : Array2D[f64]
+        The observed data.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    log_likelihood : float
+        The log-likelihood.
+    """
+    model = AlinderModel(
+        alpha=parameters[_ALPHA_INDEX],
+        b=parameters[_B_INDEX],
+        c=parameters[_C_INDEX],
+        theta0=parameters[_THETA0_INDEX],
+        scale_factor=parameters[_SCALE_FACTOR_INDEX],
+        rho=parameters[_RHO_INDEX],
+        background=background,
+    )
+    pert = model.perturbation(z_mesh, vz_mesh)
+    mask = _mask(z_mesh, vz_mesh)
+    valid = background > 0
+    predicted = pert[valid] * background[valid]
+    denom = np.copy(predicted)
+    denom[denom == 0.0] = 1.0
+    data = counts[valid]
+    broadcast_mask = mask[valid]
+    residuals = broadcast_mask * (data - predicted)
+    ln_like = -0.5 * np.sum(np.square(residuals) / denom)
+    return float(ln_like)
+
+
+def ln_likelihood_collection(
+    models: AlinderModelCollection,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> onp.Array1D[np.float64]:
+    """Calculate the log-likelihood.
+
+    Parameters
+    ----------
+    models : AlinderModelCollection
+        The collection of models.
+    counts : Array2D[f64]
+        The observed data.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+
+    Returns
+    -------
+    log_likelihood : Array1D[f64]
+        The log-likelihood for each model.
+    """
+    pert = models.perturbation(z_mesh, vz_mesh, np.ones(models.num_walkers, dtype=np.bool_))
+    mask = _mask(z_mesh, vz_mesh)
+    valid = background > 0
+    predicted = pert[valid, :] * background[valid, None]
+    denom = np.copy(predicted)
+    denom[denom == 0.0] = 1.0
+    data = counts[valid, None]
+    broadcast_mask = mask[valid, None]
+    residuals = broadcast_mask * (data - predicted)
+    ln_like = -0.5 * np.sum(
+        np.square(residuals) / denom,
+        axis=0,
+    )
+    ln_like[~np.isfinite(ln_like)] = -np.inf
+    return ln_like
+
+
+def ln_prob(
+    parameters: onp.Array1D[np.float64],
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
+) -> float:
+    """Calculate the log-probability.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        The model parameters.
+    counts : Array2D[f64]
+        The observed data.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
+    Returns
+    -------
+    log_prob : float
+        The log-probability.
+    """
+    prior = ln_prior(parameters, param_lo, param_hi)
+    if not np.isfinite(prior):
+        return prior
+    return prior + ln_likelihood(parameters, counts, background, z_mesh, vz_mesh)
+
+
+def ln_prob_collection(
+    models: AlinderModelCollection,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
+) -> onp.Array1D[np.float64]:
+    """Calculate the log-probability.
+
+    Parameters
+    ----------
+    models : AlinderModelCollection
+        The collection of models.
+    counts : Array2D[f64]
+        The observed data.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
+    Returns
+    -------
+    log_prob : Array1D[f64]
+        The log-probability for each model.
+    """
+    prior = ln_prior_collection(models, param_lo, param_hi)
+    finite_prior = np.isfinite(prior)
+    if not np.any(finite_prior):
+        return prior
+
+    pert = models.perturbation(z_mesh, vz_mesh, finite_prior)
+    mask = _mask(z_mesh, vz_mesh)
+    valid = background > 0
+    predicted = pert[valid, :] * background[valid, None]
+    denom = np.copy(predicted)
+    denom[denom == 0.0] = 1.0
+    data = counts[valid, None]
+    broadcast_mask = mask[valid, None]
+    residuals = broadcast_mask * (data - predicted)
+    likelihood = -0.5 * np.sum(
+        np.square(residuals) / denom,
+        axis=0,
+    )
+    likelihood[~np.isfinite(likelihood)] = -np.inf
+    return likelihood + prior
+
+
 class SpiralFitter(ABC):
     """A configuration of the Alinder et al 2023 fitting algorithm."""
 
@@ -401,66 +656,6 @@ class SpiralFitter(ABC):
     @staticmethod
     def _default_smoothing(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         return ndimage.gaussian_filter(arr, sigma=2)
-
-    def _ln_prior(self, models: AlinderModelCollection) -> onp.Array1D[np.float64]:
-        in_bounds: onp.Array1D[np.bool_] = np.ones(models.num_walkers, dtype=np.bool_)
-        for index in range(_NUM_PARAMETERS):
-            in_bounds &= np.logical_and(
-                models.parameters[:, index] >= self._param_lo[index], models.parameters[:, index] <= self._param_hi[index]
-            )
-        prior = np.zeros_like(in_bounds, dtype=np.float64)
-        prior[~in_bounds] = -np.inf
-        return prior
-
-    def ln_likelihood(
-        self,
-        models: AlinderModelCollection,
-        counts: onp.Array2D[np.float64],
-        background: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-    ) -> onp.Array1D[np.float64]:
-        ln_prior = self._ln_prior(models)
-        pert = models.perturbation(z_mesh, vz_mesh, np.ones_like(ln_prior, dtype=np.bool_))
-        mask = _mask(z_mesh, vz_mesh)
-        valid = background > 0
-        predicted = pert[valid, :] * background[valid, None]
-        denom = np.copy(predicted)
-        denom[denom == 0.0] = 1.0
-        data = counts[valid, None]
-        broadcast_mask = mask[valid, None]
-        residuals = broadcast_mask * (data - predicted)
-        ln_likelihood = -0.5 * np.sum(
-            np.square(residuals) / denom,
-            axis=0,
-        )
-        ln_likelihood[~np.isfinite(ln_likelihood)] = -np.inf
-        return ln_likelihood
-
-    def ln_prob(
-        self,
-        models: AlinderModelCollection,
-        counts: onp.Array2D[np.float64],
-        background: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-    ) -> onp.Array1D[np.float64]:
-        ln_prior = self._ln_prior(models)
-        pert = models.perturbation(z_mesh, vz_mesh, np.isfinite(ln_prior))
-        mask = _mask(z_mesh, vz_mesh)
-        valid = background > 0
-        predicted = pert[valid, :] * background[valid, None]
-        denom = np.copy(predicted)
-        denom[denom == 0.0] = 1.0
-        data = counts[valid, None]
-        broadcast_mask = mask[valid, None]
-        residuals = broadcast_mask * (data - predicted)
-        ln_likelihood = -0.5 * np.sum(
-            np.square(residuals) / denom,
-            axis=0,
-        )
-        ln_likelihood[~np.isfinite(ln_likelihood)] = -np.inf
-        return ln_likelihood + ln_prior
 
     def fit_spiral(
         self,
@@ -545,10 +740,6 @@ class SpiralFitterMinimizer(SpiralFitter):
     def _run_lbfgsb(
         self,
         objective_function: _ObjectiveFunc,
-        background: onp.Array2D[np.float64],
-        initial_density: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
         rng: np.random.Generator,
         warm_start: onp.Array1D[np.float64] | None = None,
     ) -> optimize.OptimizeResult:
@@ -558,12 +749,6 @@ class SpiralFitterMinimizer(SpiralFitter):
         ----------
         objective_function : Callable
             The scalar objective to minimise (negated log-prob or RMSE).
-        background : Array2D[f64]
-            Current background estimate.
-        initial_density : Array2D[f64]
-            Observed density grid.
-        z_mesh, vz_mesh : Array2D[f64]
-            Phase-space coordinate grids.
         rng : np.random.Generator
             Random number generator (for reproducible multi-start draws).
         warm_start : Array1D[f64] | None
@@ -577,7 +762,6 @@ class SpiralFitterMinimizer(SpiralFitter):
 
         """
         bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
-        args = (self, initial_density, background, z_mesh, vz_mesh)
 
         best_res: optimize.OptimizeResult | None = None
         for i in range(self._n_starts):
@@ -589,7 +773,6 @@ class SpiralFitterMinimizer(SpiralFitter):
             res = optimize.minimize(
                 objective_function,
                 x0=x0,
-                args=args,
                 method="L-BFGS-B",
                 bounds=bounds,
                 options={"maxiter": 1000, "ftol": 1e-9, "gtol": 1e-7},
@@ -640,14 +823,14 @@ class SpiralFitterMinimizer(SpiralFitter):
         log_probs_list: list[float] = []
         converged: bool = False
         num_iterations: int = 0
-        objective_function: _ObjectiveFunc
+        base_objective: _BaseObjectiveFunc
         match self._objective:
             case "prob":
-                objective_function = ln_prob_opt
+                base_objective = ln_prob_opt
             case "likelihood":
-                objective_function = ln_likelihood_opt
+                base_objective = ln_likelihood_opt
             case "error":
-                objective_function = rmse_opt
+                base_objective = rmse_opt
 
         # Warm-start point: reuse the previous iteration's best params.
         warm_start: onp.Array1D[np.float64] | None = None
@@ -655,12 +838,11 @@ class SpiralFitterMinimizer(SpiralFitter):
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
 
+            def objective_function(params: onp.Array1D[np.float64]) -> float:
+                return base_objective(params, initial_density, background, z_mesh, vz_mesh, self._param_lo, self._param_hi)
+
             res = self._run_lbfgsb(
                 objective_function,
-                background,
-                initial_density,
-                z_mesh,
-                vz_mesh,
                 rng,
                 warm_start=warm_start,
             )
@@ -730,10 +912,6 @@ class SpiralFitterMinimizer(SpiralFitter):
         )
 
 
-def _mask(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-    return -special.expit(np.square(z_mesh) + np.square(vz_mesh / 40) - 1.0) + 1.0
-
-
 def calculate_rmse(
     data: onp.Array2D[np.float64],
     estimate: onp.Array2D[np.float64],
@@ -744,71 +922,14 @@ def calculate_rmse(
     return _calculate_rmse_with_mask(data, estimate, mask)
 
 
-def _calculate_rmse_with_mask(
-    data: onp.Array2D[np.float64], estimate: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]
-) -> float:
-    return np.sqrt(np.mean(np.square(mask * (data - estimate))))
-
-
-def ln_likelihood(
-    parameters: onp.Array1D[np.float64],
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-) -> float:
-    """The log-likelihood.
-
-    Parameters
-    ----------
-    parameters : Array1D[f64]
-        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
-    counts : Array2D[f64]
-        The observed data in a grid.
-    background : Array2D[f64]
-        The background.
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
-
-    Returns
-    -------
-    log_likelihood : float
-        The negated log-likelihood.
-
-    """
-    model = AlinderModel(
-        alpha=parameters[_ALPHA_INDEX],
-        b=parameters[_B_INDEX],
-        c=parameters[_C_INDEX],
-        theta0=parameters[_THETA0_INDEX],
-        scale_factor=parameters[_SCALE_FACTOR_INDEX],
-        rho=parameters[_RHO_INDEX],
-        background=background,
-    )
-    pert = model.perturbation(z_mesh, vz_mesh)
-    mask = _mask(z_mesh, vz_mesh)
-    valid = background > 0
-    predicted = pert[valid] * background[valid]
-    denom = np.copy(predicted)
-    denom[denom == 0.0] = 1.0
-    data = counts[valid]
-    broadcast_mask = mask[valid]
-    residuals = broadcast_mask * (data - predicted)
-    ln_likelihood = -0.5 * np.sum(
-        np.square(residuals) / denom,
-    )
-    return ln_likelihood
-
-
 def ln_prob_opt(
     parameters: onp.Array1D[np.float64],
-    fitter: SpiralFitter,
     counts: onp.Array2D[np.float64],
     background: onp.Array2D[np.float64],
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
 ) -> float:
     """Negated log-probability for use with :func:`scipy.optimize.minimize`.
 
@@ -819,8 +940,6 @@ def ln_prob_opt(
     ----------
     parameters : Array1D[f64]
         Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
-    fitter : SpiralFitter
-        The fitting configuration.
     counts : Array2D[f64]
         The observed data in a grid.
     background : Array2D[f64]
@@ -829,22 +948,27 @@ def ln_prob_opt(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
     Returns
     -------
     neg_log_likelihood : float
         The negated log-probability.
     """
-    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
-    return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
+    return float(-ln_prob(parameters, counts, background, z_mesh, vz_mesh, param_lo, param_hi))
 
 
 def ln_likelihood_opt(
     parameters: onp.Array1D[np.float64],
-    fitter: SpiralFitter,
     counts: onp.Array2D[np.float64],
     background: onp.Array2D[np.float64],
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
 ) -> float:
     """Negated log-probability for use with :func:`scipy.optimize.minimize`.
 
@@ -855,8 +979,6 @@ def ln_likelihood_opt(
     ----------
     parameters : Array1D[f64]
         Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
-    fitter : SpiralFitter
-        The fitting configuration.
     counts : Array2D[f64]
         The observed data in a grid.
     background : Array2D[f64]
@@ -865,22 +987,30 @@ def ln_likelihood_opt(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
     Returns
     -------
     neg_log_likelihood : float
         The negated log-probability.
+
     """
-    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
-    return float(-fitter.ln_likelihood(collection, counts, background, z_mesh, vz_mesh)[0])
+    _ = param_lo
+    _ = param_hi
+    return float(-ln_likelihood(parameters, counts, background, z_mesh, vz_mesh))
 
 
 def rmse_opt(
     parameters: onp.Array1D[np.float64],
-    fitter: SpiralFitter,
     counts: onp.Array2D[np.float64],
     background: onp.Array2D[np.float64],
     z_mesh: onp.Array2D[np.float64],
     vz_mesh: onp.Array2D[np.float64],
+    param_lo: onp.Array1D[np.float64],
+    param_hi: onp.Array1D[np.float64],
 ) -> float:
     """Calculate RMSE for use with :func:`scipy.optimize.minimize`.
 
@@ -888,8 +1018,6 @@ def rmse_opt(
     ----------
     parameters : Array1D[f64]
         Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
-    fitter : SpiralFitter
-        The fitting configuration.
     counts : Array2D[f64]
         The observed data in a grid.
     background : Array2D[f64]
@@ -898,12 +1026,18 @@ def rmse_opt(
         The z values for each cell.
     vz_mesh : Array2D[f64]
         The Vz values for each cell.
+    param_lo : Array1D[f64]
+        The lower bounds.
+    param_hi : Array1D[f64]
+        The higher bounds.
+
     Returns
     -------
     rmse : float
         The RMSE between the model and the data.
     """
-    _ = fitter
+    _ = param_lo
+    _ = param_hi
     model = AlinderModel(
         alpha=parameters[_ALPHA_INDEX],
         b=parameters[_B_INDEX],
