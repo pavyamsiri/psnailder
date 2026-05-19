@@ -250,7 +250,7 @@ class AlinderModel:
         )
 
         lmbd = -2.0 * (ln_like_null - ln_like_alt)
-        return stats.chi2.sf(lmbd, df=1)
+        return stats.chi2.sf(lmbd, df=_NUM_PARAMETERS)
 
     def __repr__(self) -> str:
         fields: list[str] = []
