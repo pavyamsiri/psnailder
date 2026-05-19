@@ -63,6 +63,17 @@ _N_STARTS: Final[int] = 20
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
+type _ObjectiveFunc = Callable[
+    [
+        onp.Array1D[np.float64],
+        SpiralFitter,
+        onp.Array2D[np.float64],
+        onp.Array2D[np.float64],
+        onp.Array2D[np.float64],
+        onp.Array2D[np.float64],
+    ],
+    float,
+]
 
 
 @dataclass
@@ -401,6 +412,31 @@ class SpiralFitter(ABC):
         prior[~in_bounds] = -np.inf
         return prior
 
+    def ln_likelihood(
+        self,
+        models: AlinderModelCollection,
+        counts: onp.Array2D[np.float64],
+        background: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+    ) -> onp.Array1D[np.float64]:
+        ln_prior = self._ln_prior(models)
+        pert = models.perturbation(z_mesh, vz_mesh, np.ones_like(ln_prior, dtype=np.bool_))
+        mask = _mask(z_mesh, vz_mesh)
+        valid = background > 0
+        predicted = pert[valid, :] * background[valid, None]
+        denom = np.copy(predicted)
+        denom[denom == 0.0] = 1.0
+        data = counts[valid, None]
+        broadcast_mask = mask[valid, None]
+        residuals = broadcast_mask * (data - predicted)
+        ln_likelihood = -0.5 * np.sum(
+            np.square(residuals) / denom,
+            axis=0,
+        )
+        ln_likelihood[~np.isfinite(ln_likelihood)] = -np.inf
+        return ln_likelihood
+
     def ln_prob(
         self,
         models: AlinderModelCollection,
@@ -490,7 +526,7 @@ class SpiralFitterMinimizer(SpiralFitter):
 
     def __init__(
         self,
-        objective: Literal["prob", "error"] = "prob",
+        objective: Literal["prob", "error", "likelihood"] = "prob",
         n_starts: int = _N_STARTS,
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
@@ -503,22 +539,12 @@ class SpiralFitterMinimizer(SpiralFitter):
             param_lo=param_lo,
             param_hi=param_hi,
         )
-        self._objective: Literal["prob", "error"] = objective
+        self._objective: Literal["prob", "error", "likelihood"] = objective
         self._n_starts: int = n_starts
 
     def _run_lbfgsb(
         self,
-        objective_function: Callable[
-            [
-                onp.Array1D[np.float64],
-                SpiralFitter,
-                onp.Array2D[np.float64],
-                onp.Array2D[np.float64],
-                onp.Array2D[np.float64],
-                onp.Array2D[np.float64],
-            ],
-            float,
-        ],
+        objective_function: _ObjectiveFunc,
         background: onp.Array2D[np.float64],
         initial_density: onp.Array2D[np.float64],
         z_mesh: onp.Array2D[np.float64],
@@ -614,7 +640,14 @@ class SpiralFitterMinimizer(SpiralFitter):
         log_probs_list: list[float] = []
         converged: bool = False
         num_iterations: int = 0
-        objective_function = ln_prob_opt if self._objective == "prob" else rmse_opt
+        objective_function: _ObjectiveFunc
+        match self._objective:
+            case "prob":
+                objective_function = ln_prob_opt
+            case "likelihood":
+                objective_function = ln_likelihood_opt
+            case "error":
+                objective_function = rmse_opt
 
         # Warm-start point: reuse the previous iteration's best params.
         warm_start: onp.Array1D[np.float64] | None = None
@@ -717,42 +750,6 @@ def _calculate_rmse_with_mask(
     return np.sqrt(np.mean(np.square(mask * (data - estimate))))
 
 
-def ln_prob_opt(
-    parameters: onp.Array1D[np.float64],
-    fitter: SpiralFitter,
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-) -> float:
-    """Negated log-probability for use with :func:`scipy.optimize.minimize`.
-
-    ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
-    minimising this objective is equivalent to maximising the log-probability.
-
-    Parameters
-    ----------
-    parameters : Array1D[f64]
-        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
-    fitter : SpiralFitter
-        The fitting configuration.
-    counts : Array2D[f64]
-        The observed data in a grid.
-    background : Array2D[f64]
-        The background.
-    z_mesh : Array2D[f64]
-        The z values for each cell.
-    vz_mesh : Array2D[f64]
-        The Vz values for each cell.
-    Returns
-    -------
-    neg_log_likelihood : float
-        The negated log-probability.
-    """
-    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
-    return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
-
-
 def ln_likelihood(
     parameters: onp.Array1D[np.float64],
     counts: onp.Array2D[np.float64],
@@ -803,6 +800,78 @@ def ln_likelihood(
         np.square(residuals) / denom,
     )
     return ln_likelihood
+
+
+def ln_prob_opt(
+    parameters: onp.Array1D[np.float64],
+    fitter: SpiralFitter,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Negated log-probability for use with :func:`scipy.optimize.minimize`.
+
+    ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
+    minimising this objective is equivalent to maximising the log-probability.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
+    fitter : SpiralFitter
+        The fitting configuration.
+    counts : Array2D[f64]
+        The observed data in a grid.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+    Returns
+    -------
+    neg_log_likelihood : float
+        The negated log-probability.
+    """
+    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
+    return float(-fitter.ln_prob(collection, counts, background, z_mesh, vz_mesh)[0])
+
+
+def ln_likelihood_opt(
+    parameters: onp.Array1D[np.float64],
+    fitter: SpiralFitter,
+    counts: onp.Array2D[np.float64],
+    background: onp.Array2D[np.float64],
+    z_mesh: onp.Array2D[np.float64],
+    vz_mesh: onp.Array2D[np.float64],
+) -> float:
+    """Negated log-probability for use with :func:`scipy.optimize.minimize`.
+
+    ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
+    minimising this objective is equivalent to maximising the log-probability.
+
+    Parameters
+    ----------
+    parameters : Array1D[f64]
+        Parameter vector ``[alpha, b, c, theta0, scale_factor, rho]`` of length 6.
+    fitter : SpiralFitter
+        The fitting configuration.
+    counts : Array2D[f64]
+        The observed data in a grid.
+    background : Array2D[f64]
+        The background.
+    z_mesh : Array2D[f64]
+        The z values for each cell.
+    vz_mesh : Array2D[f64]
+        The Vz values for each cell.
+    Returns
+    -------
+    neg_log_likelihood : float
+        The negated log-probability.
+    """
+    collection = AlinderModelCollection(parameters=parameters.reshape(1, _NUM_PARAMETERS), background=background)
+    return float(-fitter.ln_likelihood(collection, counts, background, z_mesh, vz_mesh)[0])
 
 
 def rmse_opt(
