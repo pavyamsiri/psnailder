@@ -44,6 +44,16 @@ class _ParamBounds:
     hi: float
 
 
+@dataclass
+class _ObjectiveFuncConfig:
+    counts: onp.Array2D[np.float64]
+    background: onp.Array2D[np.float64]
+    z_mesh: onp.Array2D[np.float64]
+    vz_mesh: onp.Array2D[np.float64]
+    param_lo: onp.Array1D[np.float64]
+    param_hi: onp.Array1D[np.float64]
+
+
 _DEFAULT_PARAM_BOUNDS: Final[tuple[_ParamBounds, ...]] = (
     _ParamBounds(name="alpha", lo=0.0, hi=1.0),
     _ParamBounds(name="b", lo=0.005, hi=0.1),
@@ -63,18 +73,7 @@ _N_STARTS: Final[int] = 20
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _ParamName = Literal["alpha", "b", "c", "theta0", "scale_factor", "rho"]
-type _BaseObjectiveFunc = Callable[
-    [
-        onp.Array1D[np.float64],
-        onp.Array2D[np.float64],
-        onp.Array2D[np.float64],
-        onp.Array2D[np.float64],
-        onp.Array2D[np.float64],
-        onp.Array1D[np.float64],
-        onp.Array1D[np.float64],
-    ],
-    float,
-]
+type _ObjectiveFuncWrapper = Callable[[_ObjectiveFuncConfig], _ObjectiveFunc]
 type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], float]
 
 
@@ -823,14 +822,14 @@ class SpiralFitterMinimizer(SpiralFitter):
         log_probs_list: list[float] = []
         converged: bool = False
         num_iterations: int = 0
-        base_objective: _BaseObjectiveFunc
+        base_objective: _ObjectiveFuncWrapper
         match self._objective:
             case "prob":
-                base_objective = ln_prob_opt
+                base_objective = wrap_ln_prob_opt
             case "likelihood":
-                base_objective = ln_likelihood_opt
+                base_objective = wrap_ln_likelihood_opt
             case "error":
-                base_objective = rmse_opt
+                base_objective = wrap_rmse_opt
 
         # Warm-start point: reuse the previous iteration's best params.
         warm_start: onp.Array1D[np.float64] | None = None
@@ -838,11 +837,17 @@ class SpiralFitterMinimizer(SpiralFitter):
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
 
-            def objective_function(params: onp.Array1D[np.float64]) -> float:
-                return base_objective(params, initial_density, background, z_mesh, vz_mesh, self._param_lo, self._param_hi)
-
             res = self._run_lbfgsb(
-                objective_function,
+                base_objective(
+                    _ObjectiveFuncConfig(
+                        counts=initial_density,
+                        background=background,
+                        z_mesh=z_mesh,
+                        vz_mesh=vz_mesh,
+                        param_lo=self._param_lo,
+                        param_hi=self._param_hi,
+                    )
+                ),
                 rng,
                 warm_start=warm_start,
             )
@@ -922,15 +927,7 @@ def calculate_rmse(
     return _calculate_rmse_with_mask(data, estimate, mask)
 
 
-def ln_prob_opt(
-    parameters: onp.Array1D[np.float64],
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-    param_lo: onp.Array1D[np.float64],
-    param_hi: onp.Array1D[np.float64],
-) -> float:
+def wrap_ln_prob_opt(config: _ObjectiveFuncConfig) -> _ObjectiveFunc:
     """Negated log-probability for use with :func:`scipy.optimize.minimize`.
 
     ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
@@ -958,18 +955,24 @@ def ln_prob_opt(
     neg_log_likelihood : float
         The negated log-probability.
     """
-    return float(-ln_prob(parameters, counts, background, z_mesh, vz_mesh, param_lo, param_hi))
+
+    def _func(parameters: onp.Array1D[np.float64]) -> float:
+        return float(
+            -ln_prob(
+                parameters,
+                config.counts,
+                config.background,
+                config.z_mesh,
+                config.vz_mesh,
+                config.param_lo,
+                config.param_hi,
+            )
+        )
+
+    return _func
 
 
-def ln_likelihood_opt(
-    parameters: onp.Array1D[np.float64],
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-    param_lo: onp.Array1D[np.float64],
-    param_hi: onp.Array1D[np.float64],
-) -> float:
+def wrap_ln_likelihood_opt(config: _ObjectiveFuncConfig) -> _ObjectiveFunc:
     """Negated log-probability for use with :func:`scipy.optimize.minimize`.
 
     ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
@@ -996,23 +999,27 @@ def ln_likelihood_opt(
     -------
     neg_log_likelihood : float
         The negated log-probability.
-
     """
-    _ = param_lo
-    _ = param_hi
-    return float(-ln_likelihood(parameters, counts, background, z_mesh, vz_mesh))
+
+    def _func(parameters: onp.Array1D[np.float64]) -> float:
+        return float(
+            -ln_likelihood(
+                parameters,
+                config.counts,
+                config.background,
+                config.z_mesh,
+                config.vz_mesh,
+            )
+        )
+
+    return _func
 
 
-def rmse_opt(
-    parameters: onp.Array1D[np.float64],
-    counts: onp.Array2D[np.float64],
-    background: onp.Array2D[np.float64],
-    z_mesh: onp.Array2D[np.float64],
-    vz_mesh: onp.Array2D[np.float64],
-    param_lo: onp.Array1D[np.float64],
-    param_hi: onp.Array1D[np.float64],
-) -> float:
-    """Calculate RMSE for use with :func:`scipy.optimize.minimize`.
+def wrap_rmse_opt(config: _ObjectiveFuncConfig) -> _ObjectiveFunc:
+    """Negated log-probability for use with :func:`scipy.optimize.minimize`.
+
+    ``scipy.optimize.minimize`` minimises, so we return ``-ln_prob`` so that
+    minimising this objective is equivalent to maximising the log-probability.
 
     Parameters
     ----------
@@ -1033,23 +1040,25 @@ def rmse_opt(
 
     Returns
     -------
-    rmse : float
-        The RMSE between the model and the data.
+    neg_log_likelihood : float
+        The negated log-probability.
     """
-    _ = param_lo
-    _ = param_hi
-    model = AlinderModel(
-        alpha=parameters[_ALPHA_INDEX],
-        b=parameters[_B_INDEX],
-        c=parameters[_C_INDEX],
-        theta0=parameters[_THETA0_INDEX],
-        scale_factor=parameters[_SCALE_FACTOR_INDEX],
-        rho=parameters[_RHO_INDEX],
-        background=background,
-    )
-    mask = _mask(z_mesh, vz_mesh)
-    predict = model.fit(z_mesh, vz_mesh)
-    return _calculate_rmse_with_mask(counts, predict, mask)
+
+    def _func(parameters: onp.Array1D[np.float64]) -> float:
+        model = AlinderModel(
+            alpha=parameters[_ALPHA_INDEX],
+            b=parameters[_B_INDEX],
+            c=parameters[_C_INDEX],
+            theta0=parameters[_THETA0_INDEX],
+            scale_factor=parameters[_SCALE_FACTOR_INDEX],
+            rho=parameters[_RHO_INDEX],
+            background=config.background,
+        )
+        mask = _mask(config.z_mesh, config.vz_mesh)
+        predict = model.fit(config.z_mesh, config.vz_mesh)
+        return _calculate_rmse_with_mask(config.counts, predict, mask)
+
+    return _func
 
 
 def generate_initial_background(
