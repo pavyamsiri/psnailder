@@ -77,7 +77,7 @@ class PSpiralComponent:
         phase = self.spiral_phase(r_mesh)
 
         flattening = special.expit((r_mesh - self.rho) / self.flattening_strength)
-        pert = 1.0 + self.alpha * flattening * np.cos(theta_mesh - phase - self.theta0)
+        pert = 1.0 + self.alpha * flattening * np.cos(self.winding * theta_mesh - phase - self.theta0)
         return verify_array_shape(pert, z.shape)
 
     def spiral_phase[ShapeT: tuple[Any, ...]](self, r: onp.ArrayND[np.float64, ShapeT]) -> onp.ArrayND[np.float64, ShapeT]:
@@ -94,16 +94,15 @@ class PSpiralComponent:
             The spiral phase in radians.
 
         """
-        sign: np.float64 = np.float64(self.winding)
         b_val: np.float64 = np.float64(self.b)
         c_val: np.float64 = np.float64(self.c)
         # phi_s(r) = (+/-) (-b/2c + sqrt((b/2c)^2 + r/c))
         if c_val != 0.0:
             half_b_over_c = 0.5 * b_val / c_val
-            phase = sign * (-half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val))
+            phase = -half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val)
         # phi_s(r) = (+/-) r / b
         else:
-            phase = sign * (r / b_val)
+            phase = r / b_val
         return verify_array_shape(phase, r.shape)
 
     def model_phase(self, r_test: float = 0.5) -> float:
