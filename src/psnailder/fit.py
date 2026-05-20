@@ -115,11 +115,20 @@ class PSpiralFitter:
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
+        num_components: int | None = None,
         improve_background: bool = True,
     ) -> PSpiralFitResult:
         val = _get_value_from_gen(
             self.fit_spiral_gen(
-                z, vz, z_bins, vz_bins, winding=winding, warm_start=warm_start, seed=seed, improve_background=improve_background
+                z,
+                vz,
+                z_bins,
+                vz_bins,
+                winding=winding,
+                warm_start=warm_start,
+                seed=seed,
+                num_components=num_components,
+                improve_background=improve_background,
             )
         )
         assert val is not None
@@ -135,6 +144,7 @@ class PSpiralFitter:
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
+        num_components: int | None = None,
         improve_background: bool = True,
     ) -> Generator[PSpiralFitResult]:
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
@@ -156,6 +166,7 @@ class PSpiralFitter:
             winding=winding,
             warm_start=warm_start,
             seed=seed,
+            num_components=num_components,
             improve_background=improve_background,
         )
 
@@ -169,6 +180,7 @@ class PSpiralFitter:
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
+        num_components: int | None = None,
         improve_background: bool = True,
     ) -> PSpiralFitResult:
         val = _get_value_from_gen(
@@ -180,6 +192,7 @@ class PSpiralFitter:
                 winding=winding,
                 warm_start=warm_start,
                 seed=seed,
+                num_components=num_components,
                 improve_background=improve_background,
             )
         )
@@ -196,6 +209,7 @@ class PSpiralFitter:
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
+        num_components: int | None = None,
         improve_background: bool = True,
     ) -> Generator[PSpiralFitResult]:
         """Fit a phase spiral to the given vertical phase space map and background.
@@ -246,33 +260,84 @@ class PSpiralFitter:
         # Initialize warm start from caller-provided warm_start so we can reuse it.
         current_warm_start: onp.Array1D[np.float64] | None = warm_start
 
+        # If num_components is None, compare 1- and 2-component fits using the
+        # initial background only (improve_background=False) and pick the better
+        # model. Continue the rest of the algorithm with that fixed choice.
+        if num_components is None:
+            res1 = _get_value_from_gen(
+                self.fit_spiral_with_background_gen(
+                    initial_density,
+                    initial_background,
+                    z_mesh,
+                    vz_mesh,
+                    winding=winding,
+                    warm_start=current_warm_start,
+                    seed=seed,
+                    num_components=1,
+                    improve_background=False,
+                )
+            )
+            res2 = _get_value_from_gen(
+                self.fit_spiral_with_background_gen(
+                    initial_density,
+                    initial_background,
+                    z_mesh,
+                    vz_mesh,
+                    winding=winding,
+                    warm_start=current_warm_start,
+                    seed=seed,
+                    num_components=2,
+                    improve_background=False,
+                )
+            )
+            q1 = ln_likelihood(initial_density, res1.final_model.prediction(), mask)
+            q2 = ln_likelihood(initial_density, res2.final_model.prediction(), mask)
+            # Penalize the larger model using AIC: AIC = 2k - 2 lnL, k = number of parameters
+            k1 = 6
+            k2 = 12
+            a1 = 2 * k1 - 2.0 * q1
+            a2 = 2 * k2 - 2.0 * q2
+            if a2 < a1:
+                num_components = 2
+                current_warm_start = np.concatenate([c.to_array() for c in res2.final_model.components])
+            else:
+                num_components = 1
+                current_warm_start = res1.final_model.components[0].to_array()
+
         # Winding: None => auto-select on first iteration; otherwise use provided winding.
         best_winding: Literal[-1, 1] | None = winding
 
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
 
+            # Number of 6-parameter components to fit
+            param_count: int = 1 if num_components is None else num_components
+
             def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
                 def _objective(parameters: onp.Array1D[np.float64]) -> float:
-                    spiral_component = PSpiralComponent.from_array(parameters, winding=current_winding)
-                    model = PSpiralModel((spiral_component,), z_mesh, vz_mesh, best_background)
+                    comps = tuple(
+                        PSpiralComponent.from_array(parameters[6 * i : 6 * (i + 1)], winding=current_winding)
+                        for i in range(param_count)
+                    )
+                    model = PSpiralModel(comps, z_mesh, vz_mesh, best_background)
                     return -ln_likelihood(initial_density, model.prediction(), mask)
 
                 return _objective
 
             # Auto-select winding on first iteration if unset, then optimize for it.
             if best_winding is None:
-                pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=current_warm_start)
-                neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start)
+                pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count)
+                neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count)
                 best_winding = 1 if pos_res.fun <= neg_res.fun else -1
 
             # Optimize for chosen winding.
-            res = self._optimize_parameters(wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start)
+            res = self._optimize_parameters(wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count)
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
-            current_model = PSpiralModel(
-                (PSpiralComponent.from_array(best_params, winding=best_winding),), z_mesh, vz_mesh, best_background
+            comps = tuple(
+                PSpiralComponent.from_array(best_params[6 * i : 6 * (i + 1)], winding=best_winding) for i in range(param_count)
             )
+            current_model = PSpiralModel(comps, z_mesh, vz_mesh, best_background)
 
             # Set the first model
             if initial_model is None:
@@ -332,18 +397,26 @@ class PSpiralFitter:
         )
 
     def _optimize_parameters(
-        self, objective_func: _ObjectiveFunc, *, rng: np.random.Generator, warm_start: onp.Array1D[np.float64] | None
+        self,
+        objective_func: _ObjectiveFunc,
+        *,
+        rng: np.random.Generator,
+        warm_start: onp.Array1D[np.float64] | None,
+        param_count: int = 1,
     ) -> optimize.OptimizeResult:
-        assert warm_start is None or (warm_start.ndim == 1 and len(warm_start) == 6)
-        bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
+        # warm_start may be None or a flat vector of length 6 * param_count
+        assert warm_start is None or (warm_start.ndim == 1 and len(warm_start) == 6 * param_count)
+        base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
+        bounds = base_bounds * param_count
 
         best_res: optimize.OptimizeResult | None = None
         for i in range(self._num_starts):
             x0: onp.Array1D[np.float64]
-            if i == 0 and warm_start is not None:
+            if i == 0 and warm_start is not None and len(warm_start) == 6 * param_count:
                 x0 = warm_start
             else:
-                x0 = rng.uniform(self._param_lo, self._param_hi)
+                # Sample each component's 6 params independently
+                x0 = rng.uniform(np.tile(self._param_lo, param_count), np.tile(self._param_hi, param_count))
             res = optimize.minimize(objective_func, x0=x0, bounds=bounds)
             if best_res is None or res.fun < best_res.fun:
                 best_res = res
