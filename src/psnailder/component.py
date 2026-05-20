@@ -160,3 +160,28 @@ class PSpiralComponent:
 
         """
         return np.array([self.alpha, self.b, self.c, self.theta0, self.scale_factor, self.rho], dtype=np.float64)
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"alpha={self.alpha!r}, "
+            f"b={self.b!r}, "
+            f"c={self.c!r}, "
+            f"theta0={self.theta0!r}, "
+            f"scale_factor={self.scale_factor!r}, "
+            f"rho={self.rho!r}, "
+            f"winding={self.winding!r}, "
+            f"flattening_strength={self.flattening_strength!r})"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"α={self.alpha:.4g}, "
+            f"b={self.b:.4g}, "
+            f"c={self.c:.4g}, "
+            f"θ₀={self.theta0:.4g} rad, "
+            f"scale={self.scale_factor:.4g}, "
+            f"ρ={self.rho:.4g}, "
+            f"winding={self.winding:+d})"
+        )
