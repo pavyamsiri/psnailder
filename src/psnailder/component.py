@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from scipy import special
 import numpy as np
@@ -30,7 +30,11 @@ class PSpiralComponent:
     scale_factor : float
         The scale factor.
     rho : float
-        The flattening function distance.
+        The flattening function distance in phase radius units.
+    flattening_strength : float
+        The strength of the flattening in phase radius units.
+    winding : -1 or +1
+        The winding direction i.e., the sign of phi_s(r).
 
     """
 
@@ -40,6 +44,7 @@ class PSpiralComponent:
     theta0: float
     scale_factor: float
     rho: float
+    winding: Literal[-1, 1]
     flattening_strength: float = 0.1
 
     def perturbation[ShapeT: tuple[Any, ...]](
@@ -89,7 +94,7 @@ class PSpiralComponent:
             The spiral phase in radians.
 
         """
-        sign: np.float64 = np.sign(self.b) if self.b != 0.0 else np.float64(1.0)
+        sign: np.float64 = np.float64(self.winding)
         abs_b: np.float64 = np.abs(self.b).astype(np.float64)
         abs_c: np.float64 = np.abs(self.c)
         # phi_s(r) = (+/-) (-b/2c + sqrt((b/2c)^2 + r/c))
@@ -119,7 +124,7 @@ class PSpiralComponent:
         return phase + self.theta0
 
     @staticmethod
-    def from_array(parameters: onp.Array1D[np.float64]) -> PSpiralComponent:
+    def from_array(parameters: onp.Array1D[np.float64], *, winding: Literal[1, -1]) -> PSpiralComponent:
         """Convert an array of parameters into a spiral component.
 
         Parameters
@@ -143,6 +148,7 @@ class PSpiralComponent:
             theta0=parameters[3],
             scale_factor=parameters[4],
             rho=parameters[5],
+            winding=winding,
         )
 
     def to_array(self) -> onp.Array1D[np.float64]:

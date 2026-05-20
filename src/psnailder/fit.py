@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from scipy import ndimage, special, optimize
@@ -112,12 +112,15 @@ class PSpiralFitter:
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
+        winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
     ) -> PSpiralFitResult:
         val = _get_value_from_gen(
-            self.fit_spiral_gen(z, vz, z_bins, vz_bins, warm_start=warm_start, seed=seed, improve_background=improve_background)
+            self.fit_spiral_gen(
+                z, vz, z_bins, vz_bins, winding=winding, warm_start=warm_start, seed=seed, improve_background=improve_background
+            )
         )
         assert val is not None
         return val
@@ -129,6 +132,7 @@ class PSpiralFitter:
         z_bins: onp.Array1D[np.float64],
         vz_bins: onp.Array1D[np.float64],
         *,
+        winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
@@ -140,7 +144,14 @@ class PSpiralFitter:
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh)
         return self.fit_spiral_with_background_gen(
-            density, background, z_mesh, vz_mesh, warm_start=warm_start, seed=seed, improve_background=improve_background
+            density,
+            background,
+            z_mesh,
+            vz_mesh,
+            winding=winding,
+            warm_start=warm_start,
+            seed=seed,
+            improve_background=improve_background,
         )
 
     def fit_spiral_with_background(
@@ -150,6 +161,7 @@ class PSpiralFitter:
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         *,
+        winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
@@ -160,6 +172,7 @@ class PSpiralFitter:
                 initial_background,
                 z_mesh,
                 vz_mesh,
+                winding=winding,
                 warm_start=warm_start,
                 seed=seed,
                 improve_background=improve_background,
@@ -175,6 +188,7 @@ class PSpiralFitter:
         z_mesh: onp.Array2D[np.float64],
         vz_mesh: onp.Array2D[np.float64],
         *,
+        winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
         seed: int | None = None,
         improve_background: bool = True,
@@ -191,8 +205,10 @@ class PSpiralFitter:
             The z values for each cell.
         vz_mesh : Array2D[f64]
             The Vz values for each cell.
-        warm_start : dict[ParamName, float]
-            The warm start parameters.
+        winding : Literal[-1, 1] | None
+            The winding direction to force if given otherwise it will be automatically determined.
+        warm_start : Array1D[f64] | None
+            The warm start parameters if given.
         seed : int | None
             The random seed for the multi-start draws, or ``None`` for no seed.
         improve_background : bool
@@ -218,20 +234,38 @@ class PSpiralFitter:
         best_model: PSpiralModel | None = None
 
         converged: bool = False
-
         num_iterations: int = 0
+
+        # Initialize warm start from caller-provided warm_start so we can reuse it.
+        current_warm_start: onp.Array1D[np.float64] | None = warm_start
+
+        # Winding: None => auto-select on first iteration; otherwise use provided winding.
+        best_winding: Literal[-1, 1] | None = winding
 
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
 
-            def _objective(parameters: onp.Array1D[np.float64]) -> float:
-                spiral_component = PSpiralComponent.from_array(parameters)
-                model = PSpiralModel((spiral_component,), z_mesh, vz_mesh, best_background)
-                return -ln_likelihood(initial_density, model.prediction(), mask)
+            def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
+                def _objective(parameters: onp.Array1D[np.float64]) -> float:
+                    spiral_component = PSpiralComponent.from_array(parameters, winding=current_winding)
+                    model = PSpiralModel((spiral_component,), z_mesh, vz_mesh, best_background)
+                    return -ln_likelihood(initial_density, model.prediction(), mask)
 
-            res = self._optimize_parameters(_objective, rng=rng, warm_start=warm_start)
+                return _objective
+
+            # Auto-select winding on first iteration if unset, then optimize for it.
+            if best_winding is None:
+                pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=current_warm_start)
+                neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start)
+                best_winding = 1 if pos_res.fun <= neg_res.fun else -1
+
+            # Optimize for chosen winding.
+            res = self._optimize_parameters(wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start)
+
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
-            current_model = PSpiralModel((PSpiralComponent.from_array(best_params),), z_mesh, vz_mesh, best_background)
+            current_model = PSpiralModel(
+                (PSpiralComponent.from_array(best_params, winding=best_winding),), z_mesh, vz_mesh, best_background
+            )
 
             # Set the first model
             if initial_model is None:
@@ -270,6 +304,7 @@ class PSpiralFitter:
             best_quality = quality
             best_background = new_background
             best_model = current_model
+            current_warm_start = best_params
 
         assert initial_model is not None
         assert best_model is not None
