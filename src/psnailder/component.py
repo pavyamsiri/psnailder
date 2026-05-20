@@ -95,15 +95,15 @@ class PSpiralComponent:
 
         """
         sign: np.float64 = np.float64(self.winding)
-        abs_b: np.float64 = np.abs(self.b).astype(np.float64)
-        abs_c: np.float64 = np.abs(self.c)
+        b_val: np.float64 = np.float64(self.b)
+        c_val: np.float64 = np.float64(self.c)
         # phi_s(r) = (+/-) (-b/2c + sqrt((b/2c)^2 + r/c))
-        if abs_c != 0.0:
-            half_b_over_c = 0.5 * abs_b / abs_c
-            phase = sign * (-half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / abs_c))
+        if c_val != 0.0:
+            half_b_over_c = 0.5 * b_val / c_val
+            phase = sign * (-half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val))
         # phi_s(r) = (+/-) r / b
         else:
-            phase = sign * (r / abs_b)
+            phase = sign * (r / b_val)
         return verify_array_shape(phase, r.shape)
 
     def model_phase(self, r_test: float = 0.5) -> float:
