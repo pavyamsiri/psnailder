@@ -455,7 +455,7 @@ class PSpiralFitter:
                         sel = argmax == idx
                         if not np.any(sel):
                             continue
-                        ds_dp = deriv_stack[idx, :, sel]  # shape (6, nsel)
+                        ds_dp = deriv_stack[idx][:, sel]  # shape (6, nsel)
                         # dy/dp = background_flat[sel] * ds_dp
                         dy_dp = background_flat[sel][None, :] * ds_dp
                         contrib = (dlnL_dy[sel][None, :] * dy_dp).sum(axis=1)
