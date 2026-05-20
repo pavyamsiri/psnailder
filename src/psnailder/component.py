@@ -9,6 +9,39 @@ import numpy as np
 
 from ._shape_utils import verify_array_shape
 
+# Optional Numba acceleration: compile an elementwise loop over flattened
+# arrays. If Numba is not available the code will fall back to a NumPy-based
+# vectorised implementation.
+try:
+    import numba as _numba
+    from numba import njit as _njit
+    import math as _math
+    _NUMBA_AVAILABLE = True
+
+    @_njit
+    def _perturbation_numba(zf, vzf, alpha, b, c, theta0, scale_factor, rho, winding, flattening_strength):
+        n = zf.size
+        out = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            zi = zf[i]
+            vzi = vzf[i]
+            scaled_zi = zi * scale_factor
+            scaled_vzi = vzi / scale_factor
+            # r = hypot(z, scaled_vz)
+            r = (zi * zi + scaled_vzi * scaled_vzi) ** 0.5
+            # spiral phase
+            if c != 0.0:
+                half_b_over_c = 0.5 * b / c
+                ph = -half_b_over_c + (half_b_over_c * half_b_over_c + r / c) ** 0.5
+            else:
+                ph = r / b
+            theta = _math.atan2(vzi, scaled_zi)
+            flattening = 1.0 / (1.0 + _math.exp(-(r - rho) / flattening_strength))
+            out[i] = 1.0 + alpha * flattening * _math.cos(winding * theta - ph - theta0)
+        return out
+except Exception:
+    _NUMBA_AVAILABLE = False
+
 if TYPE_CHECKING:
     from optype import numpy as onp
 
@@ -69,6 +102,17 @@ class PSpiralComponent:
         """
         assert z.shape == vz.shape
 
+        # Prefer a Numba-accelerated per-element loop when available. This
+        # can be substantially faster than repeated array temporaries for large
+        # grids. Fall back to a NumPy-vectorised implementation otherwise.
+        if _NUMBA_AVAILABLE:
+            zf = np.ascontiguousarray(z.ravel())
+            vzf = np.ascontiguousarray(vz.ravel())
+            pert_flat = _perturbation_numba(zf, vzf, float(self.alpha), float(self.b), float(self.c), float(self.theta0), float(self.scale_factor), float(self.rho), int(self.winding), float(self.flattening_strength))
+            pert = pert_flat.reshape(z.shape)
+            return verify_array_shape(pert, z.shape)
+
+        # NumPy fallback
         scaled_z = np.multiply(z, self.scale_factor)
         scaled_vz = vz * np.reciprocal(self.scale_factor)
         r_mesh = np.hypot(z, scaled_vz)
@@ -76,7 +120,9 @@ class PSpiralComponent:
 
         phase = self.spiral_phase(r_mesh)
 
-        flattening = special.expit((r_mesh - self.rho) / self.flattening_strength)
+        # Use an explicit sigmoid rather than scipy.special.expit to keep this
+        # path free of extra SciPy overhead.
+        flattening = 1.0 / (1.0 + np.exp(-(r_mesh - self.rho) / self.flattening_strength))
         pert = 1.0 + self.alpha * flattening * np.cos(self.winding * theta_mesh - phase - self.theta0)
         return verify_array_shape(pert, z.shape)
 
