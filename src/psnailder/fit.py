@@ -143,6 +143,11 @@ class PSpiralFitter:
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=False)
         density = density.T
         background = generate_initial_background(z, vz, z_mesh, vz_mesh)
+        # Normalize initial background so it has the same total counts as the density
+        # This prevents an unnormalized KDE from being ignored by the likelihood
+        # and ensures the initial background is on the same scale as the data.
+        if np.sum(background) > 0:
+            background = background / np.sum(background) * np.sum(density)
         return self.fit_spiral_with_background_gen(
             density,
             background,
@@ -227,7 +232,9 @@ class PSpiralFitter:
         mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
 
         best_background: onp.Array2D[np.float64] = initial_background
-        best_quality: float = ln_likelihood(initial_density, best_background, mask)
+        # Initialize best_quality to -inf so that after the first model is found
+        # we compare the model prediction likelihood rather than the background-only likelihood.
+        best_quality: float = float("-inf")
 
         initial_model: PSpiralModel | None = None
         current_model: PSpiralModel | None = None
@@ -270,6 +277,13 @@ class PSpiralFitter:
             # Set the first model
             if initial_model is None:
                 initial_model = current_model
+                # After the first model is constructed, evaluate its likelihood so
+                # comparisons are done against model predictions rather than the
+                # background-only prediction. This prevents the algorithm from
+                # always thinking the model is a large improvement over the
+                # background-only case and unnecessarily updating the background.
+                if best_quality == float("-inf"):
+                    best_quality = ln_likelihood(initial_density, initial_model.prediction(), mask)
 
             if not improve_background:
                 best_model = current_model
@@ -294,7 +308,7 @@ class PSpiralFitter:
             quality = ln_likelihood(initial_density, new_data, mask)
 
             # Quality has degraded => we have converged
-            if best_quality >= quality:
+            if best_quality > quality:
                 converged = best_model is not None
                 if best_model is None:
                     best_model = initial_model
