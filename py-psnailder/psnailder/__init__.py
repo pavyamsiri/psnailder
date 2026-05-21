@@ -22,6 +22,7 @@ def _main() -> None:
     from phasmix.mock import MockModel
 
     from psnailder._internal import ln_likelihood_f64 as ln_likelihood_rust_f64
+    from psnailder._internal import PSpiralComponent as PSpiralComponentRust
     from psnailder._likelihood_utils import ln_likelihood
 
     def _run_benchmark(name: str, func: Callable[[], Any], *, num_trials: int = 100_000) -> None:  # pyright: ignore[reportExplicitAny]
@@ -82,6 +83,17 @@ def _main() -> None:
     ]
     prediction = true_model.prediction()
 
+    rust_component = PSpiralComponentRust(
+        alpha=parameters[0, 0],
+        b=parameters[0, 1],
+        c=parameters[0, 2],
+        theta0=parameters[0, 3],
+        scale_factor=parameters[0, 4],
+        rho=parameters[0, 5],
+        winding=1,
+        flattening_strength=None,
+    )
+
     def _scalar_prediction() -> None:
         signal = np.full_like(background, -np.inf)
         for comp in components:
@@ -92,7 +104,8 @@ def _main() -> None:
     _run_benchmark(
         "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
     )
-    # _run_benchmark("vectorised predictions", lambda: true_model.prediction())
+    _run_benchmark("predictions (rust, 1 component)", lambda: rust_component.perturbation(x_mesh.flatten(), y_mesh.flatten()))
+    _run_benchmark("predictions (numpy, 1 component)", lambda: components[0].perturbation(x_mesh, y_mesh))
     # _run_benchmark("scalar predictions", _scalar_prediction)
 
 
