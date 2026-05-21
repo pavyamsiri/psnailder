@@ -299,10 +299,10 @@ class PSpiralFitter:
             a2 = 2 * k2 - 2.0 * q2
             if a2 < a1:
                 num_components = 2
-                current_warm_start = np.concatenate([c.to_array() for c in res2.final_model.components])
+                current_warm_start = res2.final_model.to_array()
             else:
                 num_components = 1
-                current_warm_start = res1.final_model.components[0].to_array()
+                current_warm_start = res1.final_model.to_array()
 
         # Winding: None => auto-select on first iteration; otherwise use provided winding.
         best_winding: Literal[-1, 1] | None = winding
@@ -315,11 +315,8 @@ class PSpiralFitter:
 
             def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
                 def _objective(parameters: onp.Array1D[np.float64]) -> float:
-                    comps = tuple(
-                        PSpiralComponent.from_array(parameters[6 * i : 6 * (i + 1)], winding=current_winding)
-                        for i in range(param_count)
-                    )
-                    model = PSpiralModel(comps, z_mesh, vz_mesh, best_background)
+                    params = np.array(parameters, dtype=np.float64).reshape((param_count, 6))
+                    model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=current_winding)
                     return -ln_likelihood(initial_density, model.prediction(), mask)
 
                 return _objective
@@ -334,10 +331,8 @@ class PSpiralFitter:
             res = self._optimize_parameters(wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count)
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
-            comps = tuple(
-                PSpiralComponent.from_array(best_params[6 * i : 6 * (i + 1)], winding=best_winding) for i in range(param_count)
-            )
-            current_model = PSpiralModel(comps, z_mesh, vz_mesh, best_background)
+            params = best_params.reshape((param_count, 6))
+            current_model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=best_winding)
 
             # Set the first model
             if initial_model is None:
