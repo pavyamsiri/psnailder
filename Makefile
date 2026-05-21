@@ -7,6 +7,7 @@ help:
 	@echo "psnailder build targets:"
 	@echo ""
 	@echo "  make sync              - Run uv sync to install dependencies"
+	@echo "  make benchmark         - Run benchmark script"
 	@echo "  make build             - Default build (SSE/SSE2 only)"
 	@echo "  make build-sse         - Explicit SSE/SSE2 build"
 	@echo "  make build-avx2        - Build with AVX2 support"
@@ -17,6 +18,10 @@ help:
 # Sync dependencies
 sync:
 	cd py-psnailder && uv sync
+
+# Run the benchmark script
+benchmark:
+	cd py-psnailder && uv run psnailder/__init__.py
 
 # Default build (no special flags)
 build: sync
