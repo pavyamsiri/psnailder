@@ -21,8 +21,7 @@ def _main() -> None:
     from phasmix.component import AlinderComponent, GaussianComponent
     from phasmix.mock import MockModel
 
-    from psnailder._internal import ln_likelihood_for as ln_likelihood_rust_for
-    from psnailder._internal import ln_likelihood_iter as ln_likelihood_rust_iter
+    from psnailder._internal import ln_likelihood_f64 as ln_likelihood_rust_f64
     from psnailder._likelihood_utils import ln_likelihood
 
     def _run_benchmark(name: str, func: Callable[[], Any], *, num_trials: int = 100_000) -> None:  # pyright: ignore[reportExplicitAny]
@@ -91,10 +90,7 @@ def _main() -> None:
 
     # _run_benchmark("likelihoods", lambda: ln_likelihood(density, prediction, mask))
     _run_benchmark(
-        "likelihoods (rust for)", lambda: ln_likelihood_rust_for(density.flatten(), prediction.flatten(), mask.flatten())
-    )
-    _run_benchmark(
-        "likelihoods (rust iterator)", lambda: ln_likelihood_rust_iter(density.flatten(), prediction.flatten(), mask.flatten())
+        "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
     )
     # _run_benchmark("vectorised predictions", lambda: true_model.prediction())
     # _run_benchmark("scalar predictions", _scalar_prediction)
