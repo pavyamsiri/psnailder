@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from scipy import ndimage, special, optimize
 
-from psnailder.component import PSpiralComponent
-
-from .background_utils import generate_initial_background
-from .likelihood_utils import ln_likelihood
+from ._background_utils import generate_initial_background
+from ._likelihood_utils import ln_likelihood
 from .model import PSpiralModel
 
 if TYPE_CHECKING:
@@ -264,31 +262,27 @@ class PSpiralFitter:
         # initial background only (improve_background=False) and pick the better
         # model. Continue the rest of the algorithm with that fixed choice.
         if num_components is None:
-            res1 = _get_value_from_gen(
-                self.fit_spiral_with_background_gen(
-                    initial_density,
-                    initial_background,
-                    z_mesh,
-                    vz_mesh,
-                    winding=winding,
-                    warm_start=current_warm_start,
-                    seed=seed,
-                    num_components=1,
-                    improve_background=False,
-                )
+            res1 = self.fit_spiral_with_background(
+                initial_density,
+                initial_background,
+                z_mesh,
+                vz_mesh,
+                winding=winding,
+                warm_start=current_warm_start,
+                seed=seed,
+                num_components=1,
+                improve_background=False,
             )
-            res2 = _get_value_from_gen(
-                self.fit_spiral_with_background_gen(
-                    initial_density,
-                    initial_background,
-                    z_mesh,
-                    vz_mesh,
-                    winding=winding,
-                    warm_start=current_warm_start,
-                    seed=seed,
-                    num_components=2,
-                    improve_background=False,
-                )
+            res2 = self.fit_spiral_with_background(
+                initial_density,
+                initial_background,
+                z_mesh,
+                vz_mesh,
+                winding=winding,
+                warm_start=current_warm_start,
+                seed=seed,
+                num_components=2,
+                improve_background=False,
             )
             q1 = ln_likelihood(initial_density, res1.final_model.prediction(), mask)
             q2 = ln_likelihood(initial_density, res2.final_model.prediction(), mask)
@@ -323,12 +317,18 @@ class PSpiralFitter:
 
             # Auto-select winding on first iteration if unset, then optimize for it.
             if best_winding is None:
-                pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count)
-                neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count)
+                pos_res = self._optimize_parameters(
+                    wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count
+                )
+                neg_res = self._optimize_parameters(
+                    wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count
+                )
                 best_winding = 1 if pos_res.fun <= neg_res.fun else -1
 
             # Optimize for chosen winding.
-            res = self._optimize_parameters(wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count)
+            res = self._optimize_parameters(
+                wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
+            )
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
             params = best_params.reshape((param_count, 6))

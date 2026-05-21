@@ -31,3 +31,7 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     res = fitter.fit_spiral(z, vz, z_bins, vz_bins)
 
     assert res.final_model.pvalue(res.data, fitter._mask_func(res.final_model.z_mesh, res.final_model.vz_mesh)) > 0.05
+
+
+def smoke() -> None:
+    assert False

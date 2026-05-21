@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/psnailder_core",
+    "py-psnailder",
+]
+resolver = "3"
+
+[workspace.dependencies]
+pyo3 = { version = "0.28.3" }
+psnailder_core = { path = "crates/psnailder_core" }

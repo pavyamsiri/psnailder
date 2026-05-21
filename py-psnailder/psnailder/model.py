@@ -9,7 +9,7 @@ import numpy as np
 from scipy import special
 
 from .component import PSpiralComponent
-from .likelihood_utils import lrt_pvalue
+from ._likelihood_utils import lrt_pvalue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -1,0 +1,15 @@
+[package]
+name = "py-psnailder"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_internal"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { workspace = true }
+psnailder_core = { workspace = true }
+
+[features]
+default = []
