@@ -112,6 +112,17 @@ wheels = [
 ]
 
 [[package]]
+name = "phasmix"
+version = "0.1.0"
+source = { git = "https://github.com/pavyamsiri/phasmix.git#a9ef7a17a540a4dccd8fdefd3610306bb5e9d009" }
+dependencies = [
+    { name = "numpy" },
+    { name = "optype", extra = ["numpy"] },
+    { name = "scipy" },
+    { name = "scipy-stubs" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -133,6 +144,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "phasmix" },
     { name = "pytest" },
 ]
 
@@ -145,7 +157,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+dev = [
+    { name = "phasmix", git = "https://github.com/pavyamsiri/phasmix.git" },
+    { name = "pytest", specifier = ">=9.0.2" },
+]
 
 [[package]]
 name = "pygments"

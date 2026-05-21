@@ -1,2 +1,5 @@
 [tool.uv.workspace]
 members = ["py-psnailder"]
+
+[dependency-groups]
+dev = []

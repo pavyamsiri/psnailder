@@ -37,6 +37,7 @@ line-length = 130
 
 [dependency-groups]
 dev = [
+    "phasmix",
     "pytest>=9.0.2",
 ]
 
@@ -50,3 +51,6 @@ cache-keys = [
     {file = "Cargo.toml"},
     {file = "**/*.rs"},
 ]
+
+[tool.uv.sources]
+phasmix = { git = "https://github.com/pavyamsiri/phasmix.git" }
