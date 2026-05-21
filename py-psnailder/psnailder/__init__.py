@@ -13,14 +13,17 @@ __all__: Final[list[str]] = ["component", "fit", "model"]
 
 
 def _main() -> None:
+    import time
+    from collections.abc import Callable
+    from typing import Any
+
     import numpy as np
     from phasmix.component import AlinderComponent, GaussianComponent
     from phasmix.mock import MockModel
 
+    from psnailder._internal import ln_likelihood_for as ln_likelihood_rust_for
+    from psnailder._internal import ln_likelihood_iter as ln_likelihood_rust_iter
     from psnailder._likelihood_utils import ln_likelihood
-    import time
-    from typing import Any
-    from collections.abc import Callable
 
     def _run_benchmark(name: str, func: Callable[[], Any], *, num_trials: int = 100_000) -> None:  # pyright: ignore[reportExplicitAny]
         start_time = time.perf_counter()
@@ -86,9 +89,15 @@ def _main() -> None:
             signal = np.maximum(signal, comp.perturbation(x_mesh, y_mesh))
         _ = background * signal
 
-    _run_benchmark("likelihoods", lambda: ln_likelihood(density, prediction, mask))
-    _run_benchmark("vectorised predictions", lambda: true_model.prediction())
-    _run_benchmark("scalar predictions", _scalar_prediction)
+    # _run_benchmark("likelihoods", lambda: ln_likelihood(density, prediction, mask))
+    _run_benchmark(
+        "likelihoods (rust for)", lambda: ln_likelihood_rust_for(density.flatten(), prediction.flatten(), mask.flatten())
+    )
+    _run_benchmark(
+        "likelihoods (rust iterator)", lambda: ln_likelihood_rust_iter(density.flatten(), prediction.flatten(), mask.flatten())
+    )
+    # _run_benchmark("vectorised predictions", lambda: true_model.prediction())
+    # _run_benchmark("scalar predictions", _scalar_prediction)
 
 
 if __name__ == "__main__":

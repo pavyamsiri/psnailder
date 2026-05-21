@@ -37,6 +37,7 @@ line-length = 130
 
 [dependency-groups]
 dev = [
+    "maturin>=1.13.3",
     "phasmix",
     "pytest>=9.0.2",
 ]

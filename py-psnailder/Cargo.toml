@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { workspace = true }
 psnailder_core = { workspace = true }
+numpy = { workspace = true }
 
 [features]
 default = []
