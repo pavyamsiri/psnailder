@@ -318,13 +318,13 @@ class PSpiralFitter:
 
             # Auto-select winding on first iteration if unset, then optimize for it.
             if best_winding is None:
-                pos_res = self._optimize_parameters(
+                (_, pos_res_fun) = self._optimize_parameters(
                     wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count
                 )
-                neg_res = self._optimize_parameters(
+                (_, neg_res_fun) = self._optimize_parameters(
                     wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count
                 )
-                best_winding = 1 if pos_res.fun <= neg_res.fun else -1
+                best_winding = 1 if pos_res_fun <= neg_res_fun else -1
 
             # Optimize for chosen winding.
             (res_params, res_fun) = self._optimize_parameters(
