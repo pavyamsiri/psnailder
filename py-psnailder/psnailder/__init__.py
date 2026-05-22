@@ -23,6 +23,7 @@ def _main() -> None:
 
     from psnailder._internal import ln_likelihood_f64 as ln_likelihood_rust_f64
     from psnailder._internal import PSpiralComponent as PSpiralComponentRust
+    from psnailder._internal import PSpiralModel as PSpiralModelRust
     from psnailder._likelihood_utils import ln_likelihood
 
     def _run_benchmark(name: str, func: Callable[[], Any], *, num_trials: int = 100_000) -> None:  # pyright: ignore[reportExplicitAny]
@@ -83,6 +84,25 @@ def _main() -> None:
     ]
     prediction = true_model.prediction()
 
+    rust_model = PSpiralModelRust(
+        alpha1=parameters[0, 0],
+        b1=parameters[0, 1],
+        c1=parameters[0, 2],
+        theta01=parameters[0, 3],
+        scale_factor1=parameters[0, 4],
+        rho1=parameters[0, 5],
+        winding1=1,
+        flattening_strength1=None,
+        alpha2=parameters[0, 0],
+        b2=parameters[0, 1],
+        c2=parameters[0, 2],
+        theta02=parameters[0, 3],
+        scale_factor2=parameters[0, 4],
+        rho2=parameters[0, 5],
+        winding2=1,
+        flattening_strength2=None,
+    )
+
     rust_component = PSpiralComponentRust(
         alpha=parameters[0, 0],
         b=parameters[0, 1],
@@ -94,19 +114,43 @@ def _main() -> None:
         flattening_strength=None,
     )
 
-    def _scalar_prediction() -> None:
-        signal = np.full_like(background, -np.inf)
-        for comp in components:
-            signal = np.maximum(signal, comp.perturbation(x_mesh, y_mesh))
-        _ = background * signal
+    rust_components: list[PSpiralComponentRust] = [
+        PSpiralComponentRust(
+            alpha=parameters[0, 0],
+            b=parameters[0, 1],
+            c=parameters[0, 2],
+            theta0=parameters[0, 3],
+            scale_factor=parameters[0, 4],
+            rho=parameters[0, 5],
+            winding=1,
+            flattening_strength=None,
+        ),
+        PSpiralComponentRust(
+            alpha=parameters[1, 0],
+            b=parameters[1, 1],
+            c=parameters[1, 2],
+            theta0=parameters[1, 3],
+            scale_factor=parameters[1, 4],
+            rho=parameters[1, 5],
+            winding=1,
+            flattening_strength=None,
+        ),
+    ]
 
-    # _run_benchmark("likelihoods", lambda: ln_likelihood(density, prediction, mask))
+    def _scalar_prediction() -> None:
+        signal = np.full_like(background.flatten(), -np.inf)
+        for comp in rust_components:
+            signal = np.maximum(signal, comp.perturbation(x_mesh.flatten(), y_mesh.flatten()))
+        _ = background.flatten() * signal
+
     _run_benchmark(
         "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
     )
     _run_benchmark("predictions (rust, 1 component)", lambda: rust_component.perturbation(x_mesh.flatten(), y_mesh.flatten()))
     _run_benchmark("predictions (numpy, 1 component)", lambda: components[0].perturbation(x_mesh, y_mesh))
-    # _run_benchmark("scalar predictions", _scalar_prediction)
+    _run_benchmark("predictions (rust, 2 components)", _scalar_prediction)
+    _run_benchmark("predictions (rust model, 2 components)", lambda: rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten()))
+    _run_benchmark("predictions (numpy, 2 components)", lambda: true_model.prediction())
 
 
 if __name__ == "__main__":

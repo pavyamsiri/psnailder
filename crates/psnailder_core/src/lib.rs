@@ -16,6 +16,28 @@ pub fn ln_likelihood_f64(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 
 }
 
 #[derive(Clone, Debug)]
+pub struct PSpiralModel {
+    pub components: Vec<PSpiralComponent>,
+}
+
+impl PSpiralModel {
+    pub fn perturbation_vec(&self, z: &[f64], vz: &[f64], out: &mut [f64]) {
+        assert_eq!(z.len(), vz.len());
+        assert_eq!(z.len(), out.len());
+
+        for ((zz, vzz), oo) in z.iter().zip(vz.iter()).zip(out.iter_mut()) {
+            let mut value = f64::NEG_INFINITY;
+
+            for comp in self.components.iter() {
+                value = value.max(comp.perturbation_scalar(*zz, *vzz));
+            }
+
+            *oo = value;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PSpiralComponent {
     pub alpha: f64,
     pub b: f64,
