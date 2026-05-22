@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from scipy import ndimage, special, optimize
+from fcmaes import cmaes
+from scipy import ndimage, optimize, special
 
 from ._background_utils import generate_initial_background
 from ._likelihood_utils import ln_likelihood
@@ -326,11 +327,11 @@ class PSpiralFitter:
                 best_winding = 1 if pos_res.fun <= neg_res.fun else -1
 
             # Optimize for chosen winding.
-            res = self._optimize_parameters(
+            (res_params, res_fun) = self._optimize_parameters(
                 wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
             )
 
-            best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
+            best_params: onp.Array1D[np.float64] = np.array(res_params, dtype=np.float64)
             params = best_params.reshape((param_count, 6))
             current_model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=best_winding)
 
@@ -398,25 +399,22 @@ class PSpiralFitter:
         rng: np.random.Generator,
         warm_start: onp.Array1D[np.float64] | None,
         param_count: int = 1,
-    ) -> optimize.OptimizeResult:
+    ) -> tuple[onp.Array1D[np.float64], float]:
         # warm_start may be None or a flat vector of length 6 * param_count
         assert warm_start is None or (warm_start.ndim == 1 and len(warm_start) == 6 * param_count)
-        base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
-        bounds = base_bounds * param_count
+        bounds_obj = optimize.Bounds(lb=self._param_lo, ub=self._param_hi)
 
-        best_res: optimize.OptimizeResult | None = None
-        for i in range(self._num_starts):
-            x0: onp.Array1D[np.float64]
-            if i == 0 and warm_start is not None and len(warm_start) == 6 * param_count:
-                x0 = warm_start
-            else:
-                # Sample each component's 6 params independently
-                x0 = rng.uniform(np.tile(self._param_lo, param_count), np.tile(self._param_hi, param_count))
-            res = optimize.minimize(objective_func, x0=x0, bounds=bounds)
-            if best_res is None or res.fun < best_res.fun:
-                best_res = res
-        assert best_res is not None, "failed to find a single minimum."
-        return best_res
+        if warm_start is not None and len(warm_start) == 6 * param_count:
+            x0 = warm_start
+        else:
+            # Sample each component's 6 params independently
+            x0 = rng.uniform(np.tile(self._param_lo, param_count), np.tile(self._param_hi, param_count))
+        if self._num_starts == 1:
+            res = optimize.minimize(objective_func, x0=x0, bounds=bounds_obj)
+        else:
+            res = cmaes.minimize(objective_func, x0=x0, bounds=bounds_obj, workers=1)
+
+        return (res.x, res.fun)
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
