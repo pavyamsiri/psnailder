@@ -140,7 +140,6 @@ def _main() -> None:
                 prediction,
                 mask,
             )
-            print(val)
             return val
 
         return _objective
@@ -152,16 +151,32 @@ def _main() -> None:
 
     bounds = list(zip(param_lo.tolist(), param_hi.tolist(), strict=True))
 
-    res = optimize.minimize(
-        wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="L-BFGS-B"
-    )
+    res = optimize.minimize(wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="L-BFGS-B")
     if not res.success:
         print("L-BFGS-B failed, trying Nelder-Mead fallback...")
-        res = optimize.minimize(
-            wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="Nelder-Mead"
-        )
+        res = optimize.minimize(wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="Nelder-Mead")
     print(res)
     print(res.x)
+    alpha = res.x[0]
+    b = res.x[1]
+    c = res.x[2]
+    theta0 = res.x[3]
+    scale_factor = res.x[4]
+    rho = res.x[5]
+    print("GROUND TRUTH")
+    print(f"alpha = {true_signal.alpha:.2f}")
+    print(f"b = {true_signal.b:.2f}")
+    print(f"c = {true_signal.c:.2f}")
+    print(f"theta0 = {true_signal.theta0:.2f}")
+    print(f"scale factor = {true_signal.scale_factor:.2f}")
+    print(f"rho = {true_signal.rho:.2f}")
+    print("FIT")
+    print(f"alpha = {alpha:.2f}")
+    print(f"b = {b:.2f}")
+    print(f"c = {c:.2f}")
+    print(f"theta0 = {theta0:.2f}")
+    print(f"scale factor = {scale_factor:.2f}")
+    print(f"rho = {rho:.2f}")
 
 
 if __name__ == "__main__":
