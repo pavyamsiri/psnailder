@@ -21,6 +21,15 @@ pub struct PSpiralModel {
 }
 
 impl PSpiralModel {
+    pub fn perturbation_scalar(&self, z: f64, vz: f64) -> f64 {
+        let mut value = f64::NEG_INFINITY;
+
+        for comp in self.components.iter() {
+            value = value.max(comp.perturbation_scalar(z, vz));
+        }
+
+        value
+    }
     pub fn perturbation_vec(&self, z: &[f64], vz: &[f64], out: &mut [f64]) {
         assert_eq!(z.len(), vz.len());
         assert_eq!(z.len(), out.len());

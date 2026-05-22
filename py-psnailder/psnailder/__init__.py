@@ -143,14 +143,30 @@ def _main() -> None:
             signal = np.maximum(signal, comp.perturbation(x_mesh.flatten(), y_mesh.flatten()))
         _ = background.flatten() * signal
 
+    def _scalar_objective() -> None:
+        prediction = background.flatten() * rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten())
+        _ = ln_likelihood_rust_f64(density.flatten(), prediction, mask.flatten())
+
+    def _numpy_objective() -> None:
+        prediction = true_model.prediction()
+        _ = ln_likelihood(density, prediction, mask)
+
+    # _run_benchmark(
+    #     "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
+    # )
+    # _run_benchmark("predictions (rust, 1 component)", lambda: rust_component.perturbation(x_mesh.flatten(), y_mesh.flatten()))
+    # _run_benchmark("predictions (numpy, 1 component)", lambda: components[0].perturbation(x_mesh, y_mesh))
+    # _run_benchmark("predictions (rust, 2 components)", _scalar_prediction)
+    # _run_benchmark("predictions (rust model, 2 components)", lambda: rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten()))
+    # _run_benchmark("predictions (numpy, 2 components)", lambda: true_model.prediction())
+    _run_benchmark("objective (rust with python adapter)", _scalar_objective)
     _run_benchmark(
-        "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
+        "objective (rust)",
+        lambda: rust_model.evaluate_likelihood(
+            density.flatten(), background.flatten(), mask.flatten(), x_mesh.flatten(), y_mesh.flatten()
+        ),
     )
-    _run_benchmark("predictions (rust, 1 component)", lambda: rust_component.perturbation(x_mesh.flatten(), y_mesh.flatten()))
-    _run_benchmark("predictions (numpy, 1 component)", lambda: components[0].perturbation(x_mesh, y_mesh))
-    _run_benchmark("predictions (rust, 2 components)", _scalar_prediction)
-    _run_benchmark("predictions (rust model, 2 components)", lambda: rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten()))
-    _run_benchmark("predictions (numpy, 2 components)", lambda: true_model.prediction())
+    _run_benchmark("objective (numpy)", _numpy_objective)
 
 
 if __name__ == "__main__":

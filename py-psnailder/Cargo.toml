@@ -8,6 +8,7 @@ name = "_internal"
 crate-type = ["cdylib"]
 
 [dependencies]
+itertools = { workspace = true }
 pyo3 = { workspace = true }
 psnailder_core = { workspace = true }
 numpy = { workspace = true }
