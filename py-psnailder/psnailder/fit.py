@@ -316,6 +316,7 @@ class PSpiralFitter:
                 return _objective
 
             # Auto-select winding on first iteration if unset, then optimize for it.
+            res: optimize.OptimizeResult
             if best_winding is None:
                 pos_res = self._optimize_parameters(
                     wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count
@@ -323,12 +324,17 @@ class PSpiralFitter:
                 neg_res = self._optimize_parameters(
                     wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count
                 )
-                best_winding = 1 if pos_res.fun <= neg_res.fun else -1
-
-            # Optimize for chosen winding.
-            res = self._optimize_parameters(
-                wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
-            )
+                if pos_res.fun <= neg_res.fun:
+                    best_winding = 1
+                    res = pos_res
+                else:
+                    best_winding = -1
+                    res = neg_res
+            else:
+                # Optimize for chosen winding.
+                res = self._optimize_parameters(
+                    wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
+                )
 
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
             params = best_params.reshape((param_count, 6))
