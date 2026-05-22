@@ -128,27 +128,18 @@ def _main() -> None:
             if not res.success:
                 res = optimize.minimize(wrap_winding_objective(1), x0=log_parameters, bounds=bounds, method="Nelder-Mead")
 
-    def _find_minimum_fcmaes_cma_single() -> None:
-        from fcmaes import cmaes
-        from scipy.optimize import Bounds
+    def _find_minimum_de() -> None:
+        de_res = optimize.differential_evolution(wrap_winding_objective(1), bounds=bounds)
+        _ = de_res
 
-        objective = wrap_winding_objective(1)
-        bounds_obj = Bounds(lb=param_lo, ub=param_hi)
-        result = cmaes.minimize(objective, x0=log_parameters, bounds=bounds_obj, workers=1)
-        _ = result
-
-    def _find_minimum_fcmaes_cma_multi() -> None:
-        from fcmaes import cmaes
-        from scipy.optimize import Bounds
-
-        objective = wrap_winding_objective(1)
-        bounds_obj = Bounds(lb=param_lo, ub=param_hi)
-        result = cmaes.minimize(objective, x0=log_parameters, bounds=bounds_obj, workers=None)
-        _ = result
+    def _find_minimum_basinhopping() -> None:
+        de_res = optimize.basinhopping(wrap_winding_objective(1), x0=log_parameters * (1 + 1e-5))
+        print(de_res)
+        _ = de_res
 
     _run_benchmark("multiple local", _find_minimum_multi_local, num_trials=10)
-    _run_benchmark("fcmaes CMA (single-core)", _find_minimum_fcmaes_cma_single, num_trials=10)
-    _run_benchmark("fcmaes CMA (multi-core)", _find_minimum_fcmaes_cma_multi, num_trials=10)
+    _run_benchmark("differential evolution", _find_minimum_de, num_trials=2)
+    _run_benchmark("basinhopping ", _find_minimum_basinhopping, num_trials=2)
 
 
 if __name__ == "__main__":
