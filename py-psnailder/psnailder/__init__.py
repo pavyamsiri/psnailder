@@ -79,42 +79,6 @@ def _main() -> None:
             [true_signal.alpha, true_signal.b, true_signal.c, true_signal.theta0, true_signal.scale_factor, true_signal.rho],
         ],
     ).reshape((1, 6))
-    true_model = model.PSpiralModel(parameters, x_mesh, y_mesh, background, winding=1)
-    prediction = true_model.prediction()
-
-    rust_components: list[PSpiralComponentRust] = [
-        PSpiralComponentRust(
-            alpha=parameters[0, 0],
-            b=parameters[0, 1],
-            c=parameters[0, 2],
-            theta0=parameters[0, 3],
-            scale_factor=parameters[0, 4],
-            rho=parameters[0, 5],
-            winding=1,
-            flattening_strength=None,
-        )
-    ]
-
-    def _scalar_objective(parameters: onp.Array1D[np.float64]) -> float:
-        rust_model = PSpiralModelRust(
-            [
-                PSpiralComponentRust(
-                    alpha=parameters[0],
-                    b=parameters[1],
-                    c=parameters[2],
-                    theta0=parameters[3],
-                    scale_factor=parameters[4],
-                    rho=parameters[5],
-                    winding=1,
-                    flattening_strength=None,
-                )
-            ]
-        )
-
-        val = -rust_model.evaluate_likelihood(
-            density.flatten(), background.flatten(), mask.flatten(), x_mesh.flatten(), y_mesh.flatten()
-        )
-        return val
 
     def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
         def _objective(parameters: onp.Array1D[np.float64]) -> float:
@@ -122,7 +86,7 @@ def _main() -> None:
                 [
                     PSpiralComponentRust(
                         alpha=parameters[0],
-                        b=parameters[1],
+                        lnb=parameters[1],
                         c=parameters[2],
                         theta0=parameters[3],
                         scale_factor=parameters[4],
@@ -146,37 +110,36 @@ def _main() -> None:
 
     from scipy import optimize
 
-    param_lo: onp.Array1D[np.float64] = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
-    param_hi: onp.Array1D[np.float64] = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
+    param_lo: onp.Array1D[np.float64] = np.array([0.0, np.log(0.005), 0.0, -np.pi, np.log(30.0), 0.0])
+    param_hi: onp.Array1D[np.float64] = np.array([1.0, np.log(0.1), 0.004, +np.pi, np.log(70.0), 0.18])
+
+    print(f"low = {param_lo}")
+    print(f"high = {param_hi}")
 
     bounds = list(zip(param_lo.tolist(), param_hi.tolist(), strict=True))
 
-    res = optimize.minimize(wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="L-BFGS-B")
-    if not res.success:
-        print("L-BFGS-B failed, trying Nelder-Mead fallback...")
-        res = optimize.minimize(wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="Nelder-Mead")
-    print(res)
-    print(res.x)
-    alpha = res.x[0]
-    b = res.x[1]
-    c = res.x[2]
-    theta0 = res.x[3]
-    scale_factor = res.x[4]
-    rho = res.x[5]
-    print("GROUND TRUTH")
-    print(f"alpha = {true_signal.alpha:.2f}")
-    print(f"b = {true_signal.b:.2f}")
-    print(f"c = {true_signal.c:.2f}")
-    print(f"theta0 = {true_signal.theta0:.2f}")
-    print(f"scale factor = {true_signal.scale_factor:.2f}")
-    print(f"rho = {true_signal.rho:.2f}")
-    print("FIT")
-    print(f"alpha = {alpha:.2f}")
-    print(f"b = {b:.2f}")
-    print(f"c = {c:.2f}")
-    print(f"theta0 = {theta0:.2f}")
-    print(f"scale factor = {scale_factor:.2f}")
-    print(f"rho = {rho:.2f}")
+    log_parameters = np.copy(parameters.flatten())
+    log_parameters[1] = np.log(log_parameters[1])
+    log_parameters[4] = np.log(log_parameters[4])
+
+    def _find_minimum_multi_local() -> None:
+        for i in range(20):
+            res = optimize.minimize(wrap_winding_objective(1), x0=log_parameters, bounds=bounds, method="L-BFGS-B")
+            if not res.success:
+                res = optimize.minimize(wrap_winding_objective(1), x0=log_parameters, bounds=bounds, method="Nelder-Mead")
+
+    def _find_minimum_de() -> None:
+        de_res = optimize.differential_evolution(wrap_winding_objective(1), bounds=bounds)
+        _ = de_res
+
+    def _find_minimum_basinhopping() -> None:
+        de_res = optimize.basinhopping(wrap_winding_objective(1), x0=log_parameters * (1 + 1e-5))
+        print(de_res)
+        _ = de_res
+
+    _run_benchmark("multiple local", _find_minimum_multi_local, num_trials=10)
+    _run_benchmark("differential evolution", _find_minimum_de, num_trials=2)
+    _run_benchmark("basinhopping ", _find_minimum_basinhopping, num_trials=2)
 
 
 if __name__ == "__main__":

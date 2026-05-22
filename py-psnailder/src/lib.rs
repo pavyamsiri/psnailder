@@ -89,7 +89,7 @@ impl PSpiralComponent {
     #[new]
     fn new(
         alpha: f64,
-        b: f64,
+        lnb: f64,
         c: f64,
         theta0: f64,
         scale_factor: f64,
@@ -99,7 +99,7 @@ impl PSpiralComponent {
     ) -> Self {
         Self(psnailder_core::PSpiralComponent {
             alpha,
-            b,
+            lnb,
             c,
             theta0,
             scale_factor,
