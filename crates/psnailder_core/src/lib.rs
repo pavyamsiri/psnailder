@@ -6,10 +6,12 @@ pub fn ln_likelihood_f64(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 
     for ((current_data, current_prediction), current_mask) in
         data.iter().zip(prediction.iter()).zip(mask.iter())
     {
+        if *current_prediction <= 0.0 {
+            continue;
+        }
         let residual = current_mask * (current_data - current_prediction);
         let numer = residual * residual;
-        let denom = current_prediction + ((*current_prediction == 0.0) as i32 as f64);
-        result += numer / denom;
+        result += numer / current_prediction;
     }
 
     -0.5 * result
@@ -22,26 +24,27 @@ pub struct PSpiralModel {
 
 impl PSpiralModel {
     pub fn perturbation_scalar(&self, z: f64, vz: f64) -> f64 {
+        if self.components.is_empty() {
+            return 1.0;
+        }
         let mut value = f64::NEG_INFINITY;
 
         for comp in self.components.iter() {
             value = value.max(comp.perturbation_scalar(z, vz));
         }
 
-        value
+        if value.is_finite() {
+            value
+        } else {
+            1.0
+        }
     }
     pub fn perturbation_vec(&self, z: &[f64], vz: &[f64], out: &mut [f64]) {
         assert_eq!(z.len(), vz.len());
         assert_eq!(z.len(), out.len());
 
         for ((zz, vzz), oo) in z.iter().zip(vz.iter()).zip(out.iter_mut()) {
-            let mut value = f64::NEG_INFINITY;
-
-            for comp in self.components.iter() {
-                value = value.max(comp.perturbation_scalar(*zz, *vzz));
-            }
-
-            *oo = value;
+            *oo = self.perturbation_scalar(*zz, *vzz);
         }
     }
 }
@@ -66,11 +69,14 @@ fn expit(x: f64) -> f64 {
 impl PSpiralComponent {
     #[inline]
     pub fn spiral_phase(&self, r: f64) -> f64 {
-        if self.c != 0.0 {
-            let half_b_over_c = 0.5 * self.b / self.c;
-            -half_b_over_c + (half_b_over_c * half_b_over_c + r / self.c).sqrt()
+        let abs_c = self.c.abs();
+        let abs_b = self.b.abs();
+        if abs_c > 1e-10 {
+            let half_b_over_c = 0.5 * abs_b / abs_c;
+            let term = half_b_over_c * half_b_over_c + r / abs_c;
+            -half_b_over_c + term.sqrt()
         } else {
-            r / self.b
+            r / abs_b
         }
     }
 

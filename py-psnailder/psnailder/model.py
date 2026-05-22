@@ -59,14 +59,16 @@ class PSpiralModel:
 
         # spiral phase: handle c != 0 and c == 0 (vectorised, avoid dividing by zero)
         phase = np.empty_like(r)
-        c_mask = c[:, 0, 0] != 0.0
+        abs_b = np.abs(b)
+        abs_c = np.abs(c)
+        c_mask = (abs_c[:, 0, 0] > 1e-10)
 
         # Compute for components where c != 0 using boolean indexing
-        half = 0.5 * b[c_mask] / c[c_mask]
-        phase[c_mask] = -half + np.sqrt(np.square(half) + r[c_mask] / c[c_mask])
+        half = 0.5 * abs_b[c_mask] / abs_c[c_mask]
+        phase[c_mask] = -half + np.sqrt(np.square(half) + r[c_mask] / abs_c[c_mask])
 
         # For components where c == 0, use r / b
-        phase[~c_mask] = r[~c_mask] / b[~c_mask]
+        phase[~c_mask] = r[~c_mask] / abs_b[~c_mask]
 
         flattening = special.expit((r - rho) / self.flattening_strength)
         pert = 1.0 + alphas * flattening * np.cos(self.winding * theta - phase - theta0)

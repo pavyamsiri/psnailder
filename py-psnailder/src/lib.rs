@@ -7,46 +7,9 @@ pub struct PSpiralModel(psnailder_core::PSpiralModel);
 #[pymethods]
 impl PSpiralModel {
     #[new]
-    fn new(
-        alpha1: f64,
-        b1: f64,
-        c1: f64,
-        theta01: f64,
-        scale_factor1: f64,
-        rho1: f64,
-        winding1: i8,
-        flattening_strength1: Option<f64>,
-        alpha2: f64,
-        b2: f64,
-        c2: f64,
-        theta02: f64,
-        scale_factor2: f64,
-        rho2: f64,
-        winding2: i8,
-        flattening_strength2: Option<f64>,
-    ) -> Self {
-        let comp1 = psnailder_core::PSpiralComponent {
-            alpha: alpha1,
-            b: b1,
-            c: c1,
-            theta0: theta01,
-            scale_factor: scale_factor1,
-            rho: rho1,
-            winding: winding1,
-            flattening_strength: flattening_strength1.unwrap_or(0.1),
-        };
-        let comp2 = psnailder_core::PSpiralComponent {
-            alpha: alpha2,
-            b: b2,
-            c: c2,
-            theta0: theta02,
-            scale_factor: scale_factor2,
-            rho: rho2,
-            winding: winding2,
-            flattening_strength: flattening_strength2.unwrap_or(0.1),
-        };
+    fn new(components: Vec<PyRef<PSpiralComponent>>) -> Self {
         Self(psnailder_core::PSpiralModel {
-            components: vec![comp1, comp2],
+            components: components.iter().map(|v| v.0.clone()).collect(),
         })
     }
 
@@ -103,16 +66,12 @@ impl PSpiralModel {
         let mask = mask.as_slice()?;
         let background = background.as_slice()?;
         let mut out = vec![0.0; data.len()];
-        for (((zz, vzz), oo), current_background) in z
-            .iter()
-            .zip(vz.iter())
-            .zip(out.iter_mut())
-            .zip(background.iter())
-        {
+        for (zz, vzz, oo, current_background) in itertools::izip!(z, vz, &mut out, background) {
             let mut value = f64::NEG_INFINITY;
 
             for comp in self.0.components.iter() {
-                value = value.max(comp.perturbation_scalar(*zz, *vzz));
+                let pert_value = comp.perturbation_scalar(*zz, *vzz);
+                value = value.max(pert_value);
             }
 
             *oo = current_background * value;

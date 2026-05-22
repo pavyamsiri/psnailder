@@ -4,18 +4,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 from psnailder import component, fit, model
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import Final
+    from optype import numpy as onp
+
 
 __all__: Final[list[str]] = ["component", "fit", "model"]
+
+
+type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], onp.ToFloat]
+type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
+type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 
 
 def _main() -> None:
     import time
     from collections.abc import Callable
-    from typing import Any
+    from typing import Any, Literal
+    from optype import numpy as onp
 
     import numpy as np
     from phasmix.component import AlinderComponent, GaussianComponent
@@ -67,52 +77,10 @@ def _main() -> None:
     parameters = np.array(
         [
             [true_signal.alpha, true_signal.b, true_signal.c, true_signal.theta0, true_signal.scale_factor, true_signal.rho],
-            [
-                true_signal.alpha,
-                true_signal.b,
-                true_signal.c,
-                true_signal.theta0 + np.pi,
-                true_signal.scale_factor,
-                true_signal.rho,
-            ],
         ],
-    )
+    ).reshape((1, 6))
     true_model = model.PSpiralModel(parameters, x_mesh, y_mesh, background, winding=1)
-    components = [
-        component.PSpiralComponent.from_array(parameters[0, :], winding=1),
-        component.PSpiralComponent.from_array(parameters[1, :], winding=1),
-    ]
     prediction = true_model.prediction()
-
-    rust_model = PSpiralModelRust(
-        alpha1=parameters[0, 0],
-        b1=parameters[0, 1],
-        c1=parameters[0, 2],
-        theta01=parameters[0, 3],
-        scale_factor1=parameters[0, 4],
-        rho1=parameters[0, 5],
-        winding1=1,
-        flattening_strength1=None,
-        alpha2=parameters[0, 0],
-        b2=parameters[0, 1],
-        c2=parameters[0, 2],
-        theta02=parameters[0, 3],
-        scale_factor2=parameters[0, 4],
-        rho2=parameters[0, 5],
-        winding2=1,
-        flattening_strength2=None,
-    )
-
-    rust_component = PSpiralComponentRust(
-        alpha=parameters[0, 0],
-        b=parameters[0, 1],
-        c=parameters[0, 2],
-        theta0=parameters[0, 3],
-        scale_factor=parameters[0, 4],
-        rho=parameters[0, 5],
-        winding=1,
-        flattening_strength=None,
-    )
 
     rust_components: list[PSpiralComponentRust] = [
         PSpiralComponentRust(
@@ -124,49 +92,76 @@ def _main() -> None:
             rho=parameters[0, 5],
             winding=1,
             flattening_strength=None,
-        ),
-        PSpiralComponentRust(
-            alpha=parameters[1, 0],
-            b=parameters[1, 1],
-            c=parameters[1, 2],
-            theta0=parameters[1, 3],
-            scale_factor=parameters[1, 4],
-            rho=parameters[1, 5],
-            winding=1,
-            flattening_strength=None,
-        ),
+        )
     ]
 
-    def _scalar_prediction() -> None:
-        signal = np.full_like(background.flatten(), -np.inf)
-        for comp in rust_components:
-            signal = np.maximum(signal, comp.perturbation(x_mesh.flatten(), y_mesh.flatten()))
-        _ = background.flatten() * signal
+    def _scalar_objective(parameters: onp.Array1D[np.float64]) -> float:
+        rust_model = PSpiralModelRust(
+            [
+                PSpiralComponentRust(
+                    alpha=parameters[0],
+                    b=parameters[1],
+                    c=parameters[2],
+                    theta0=parameters[3],
+                    scale_factor=parameters[4],
+                    rho=parameters[5],
+                    winding=1,
+                    flattening_strength=None,
+                )
+            ]
+        )
 
-    def _scalar_objective() -> None:
-        prediction = background.flatten() * rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten())
-        _ = ln_likelihood_rust_f64(density.flatten(), prediction, mask.flatten())
-
-    def _numpy_objective() -> None:
-        prediction = true_model.prediction()
-        _ = ln_likelihood(density, prediction, mask)
-
-    # _run_benchmark(
-    #     "likelihoods (rust f64)", lambda: ln_likelihood_rust_f64(density.flatten(), prediction.flatten(), mask.flatten())
-    # )
-    # _run_benchmark("predictions (rust, 1 component)", lambda: rust_component.perturbation(x_mesh.flatten(), y_mesh.flatten()))
-    # _run_benchmark("predictions (numpy, 1 component)", lambda: components[0].perturbation(x_mesh, y_mesh))
-    # _run_benchmark("predictions (rust, 2 components)", _scalar_prediction)
-    # _run_benchmark("predictions (rust model, 2 components)", lambda: rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten()))
-    # _run_benchmark("predictions (numpy, 2 components)", lambda: true_model.prediction())
-    _run_benchmark("objective (rust with python adapter)", _scalar_objective)
-    _run_benchmark(
-        "objective (rust)",
-        lambda: rust_model.evaluate_likelihood(
+        val = -rust_model.evaluate_likelihood(
             density.flatten(), background.flatten(), mask.flatten(), x_mesh.flatten(), y_mesh.flatten()
-        ),
+        )
+        return val
+
+    def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
+        def _objective(parameters: onp.Array1D[np.float64]) -> float:
+            rust_model = PSpiralModelRust(
+                [
+                    PSpiralComponentRust(
+                        alpha=parameters[0],
+                        b=parameters[1],
+                        c=parameters[2],
+                        theta0=parameters[3],
+                        scale_factor=parameters[4],
+                        rho=parameters[5],
+                        winding=current_winding,
+                        flattening_strength=None,
+                    )
+                ]
+            )
+            prediction_flat = background.flatten() * rust_model.perturbation(x_mesh.flatten(), y_mesh.flatten())
+            prediction = prediction_flat.reshape(density.shape)
+
+            val = -ln_likelihood(
+                density,
+                prediction,
+                mask,
+            )
+            print(val)
+            return val
+
+        return _objective
+
+    from scipy import optimize
+
+    param_lo: onp.Array1D[np.float64] = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
+    param_hi: onp.Array1D[np.float64] = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
+
+    bounds = list(zip(param_lo.tolist(), param_hi.tolist(), strict=True))
+
+    res = optimize.minimize(
+        wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="L-BFGS-B"
     )
-    _run_benchmark("objective (numpy)", _numpy_objective)
+    if not res.success:
+        print("L-BFGS-B failed, trying Nelder-Mead fallback...")
+        res = optimize.minimize(
+            wrap_winding_objective(1), x0=parameters.flatten(), bounds=bounds, method="Nelder-Mead"
+        )
+    print(res)
+    print(res.x)
 
 
 if __name__ == "__main__":
