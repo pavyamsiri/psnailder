@@ -414,7 +414,7 @@ def _check_accuracy(
     guess: onp.Array1D[np.float64],
     lb: onp.Array1D[np.float64],
     ub: onp.Array1D[np.float64],
-    n_random: int = 10,
+    num_random: int = 10,
     seed: int = 42,
 ) -> BenchmarkReport:
     rng = np.random.default_rng(seed)
@@ -432,7 +432,7 @@ def _check_accuracy(
     total_nfev = 0
     best_ll: float = np.inf
 
-    for _ in range(n_random):
+    for _ in range(num_random):
         bad_guess = rng.uniform(lb, ub)
         t0 = time.perf_counter()
         estimated, ll, nfev = optimizer.minimize(bad_guess, lb, ub)
@@ -441,12 +441,12 @@ def _check_accuracy(
         best_ll = min(best_ll, ll)
         total_nfev += nfev
 
-    success_rate = successes / n_random
+    success_rate = successes / num_random
     rating_color = "green" if success_rate == 1.0 else ("yellow" if success_rate > 0.0 else "red")
     rich.print(f"-- [yellow]{optimizer.name()}[/yellow] ([red]random guesses[/red]) --")
-    rich.print(f"Success rate: {successes}/{n_random} [{rating_color}]({success_rate:.0%})[/{rating_color}]")
-    rich.print(f"Total time: {total_time:.3f} s  Mean: {total_time / n_random:.3f} s  Best LL: {best_ll:.5f}")
-    rich.print(f"Mean # of FEs: {total_nfev / n_random:.1f}")
+    rich.print(f"Success rate: {successes}/{num_random} [{rating_color}]({success_rate:.0%})[/{rating_color}]")
+    rich.print(f"Total time: {total_time:.3f} s  Mean: {total_time / num_random:.3f} s  Best LL: {best_ll:.5f}")
+    rich.print(f"Mean # of FEs: {total_nfev / num_random:.1f}")
 
     return BenchmarkReport(
         optimizer_name=optimizer.name(),
@@ -454,10 +454,10 @@ def _check_accuracy(
         good_guess_nfev=good_nfev,
         good_guess_success=good_success,
         success_rate=success_rate,
-        mean_time=total_time / n_random,
-        mean_nfev=total_nfev / n_random,
+        mean_time=total_time / num_random,
+        mean_nfev=total_nfev / num_random,
         best_ll=best_ll,
-        n_random=n_random,
+        n_random=num_random,
     )
 
 
@@ -543,7 +543,14 @@ def main(raw_args: Sequence[str]) -> None:
     else:
         selected = optimizer_selection
     optimizers = [OPTIMIZER_REGISTRY[name](objective) for name in selected]
-    reports = [_check_accuracy(names, true_params, opt, guess=good_guess, lb=lb, ub=ub) for opt in optimizers]
+
+    num_random: int = int(args.num_random)
+    seed: int = int(args.seed)
+
+    reports = [
+        _check_accuracy(names, true_params, opt, guess=good_guess, lb=lb, ub=ub, num_random=num_random, seed=seed)
+        for opt in optimizers
+    ]
 
     _print_rankings(reports)
 
@@ -557,7 +564,14 @@ def _parse_args(raw_args: Sequence[str]) -> argparse.Namespace:
         metavar="OPTIMIZER",
         help=f"Optimizers to benchmark. Choices: {', '.join(OPTIMIZER_REGISTRY)}. Defaults to all.",
     )
-    _ = parser.add_argument("--n-random", type=int, default=10, help="Number of random restarts per optimizer (default: 10).")
+    _ = parser.add_argument(
+        "-nrandom",
+        "--nrandom",
+        dest="num_random",
+        type=int,
+        default=10,
+        help="Number of random restarts per optimizer (default: 10).",
+    )
     _ = parser.add_argument("--seed", type=int, default=42, help="RNG seed for random guesses (default: 42).")
     return parser.parse_args(raw_args)
 
