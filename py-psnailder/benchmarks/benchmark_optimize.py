@@ -128,6 +128,80 @@ class ScipyDEOpt(Optimizer):
         return (est_params, res.fun, res.nfev)
 
 
+class ScipyDualAnnealingOpt(Optimizer):
+    def __init__(self, objective: Objective) -> None:
+        self.objective: Objective = objective
+
+    @override
+    def name(self) -> str:
+        return "scipy dual annealing optimizer"
+
+    @override
+    def minimize(
+        self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
+    ) -> tuple[onp.Array1D[np.float64], float, int]:
+        bounds = optimize.Bounds(lb=lb, ub=ub)
+        res = optimize.dual_annealing(self.objective, bounds, x0=guess)
+        return (np.array(res.x), res.fun, res.nfev)
+
+
+class ScipySHGOOpt(Optimizer):
+    def __init__(self, objective: Objective) -> None:
+        self.objective: Objective = objective
+
+    @override
+    def name(self) -> str:
+        return "scipy shgo optimizer"
+
+    @override
+    def minimize(
+        self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
+    ) -> tuple[onp.Array1D[np.float64], float, int]:
+        bounds = optimize.Bounds(lb=lb, ub=ub)
+        res = optimize.shgo(self.objective, bounds)
+        return (np.array(res.x), res.fun, res.nfev)
+
+
+class ScipyDIRECTOpt(Optimizer):
+    def __init__(self, objective: Objective) -> None:
+        self.objective: Objective = objective
+
+    @override
+    def name(self) -> str:
+        return "scipy direct optimizer"
+
+    @override
+    def minimize(
+        self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
+    ) -> tuple[onp.Array1D[np.float64], float, int]:
+        bounds = optimize.Bounds(lb=lb, ub=ub)
+        res = optimize.direct(self.objective, bounds)
+        return (np.array(res.x), res.fun, res.nfev)
+
+
+class ScipyBasinHoppingOpt(Optimizer):
+    def __init__(self, objective: Objective) -> None:
+        self.objective: Objective = objective
+
+    @override
+    def name(self) -> str:
+        return "scipy basin hopping optimizer"
+
+    @override
+    def minimize(
+        self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
+    ) -> tuple[onp.Array1D[np.float64], float, int]:
+        res = optimize.basinhopping(
+            self.objective,
+            guess,
+            minimizer_kwargs={
+                "method": "L-BFGS-B",
+                "bounds": optimize.Bounds(lb=lb, ub=ub),
+            },
+        )
+        return (np.array(res.x), res.fun, res.nfev)
+
+
 def _create_objective(signal_comp: AlinderComponent) -> Objective:
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
@@ -249,6 +323,10 @@ def main() -> None:
     _check_accuracy(names, true_params, ScipyLBFGSBToNMOpt(objective), guess=good_guess, lb=lb, ub=ub)
     _check_accuracy(names, true_params, ScipyDEOpt(objective), guess=good_guess, lb=lb, ub=ub)
     _check_accuracy(names, true_params, ScipyNaiveMultistartOpt(objective, seed=42), guess=good_guess, lb=lb, ub=ub)
+    _check_accuracy(names, true_params, ScipyDualAnnealingOpt(objective), guess=good_guess, lb=lb, ub=ub)
+    _check_accuracy(names, true_params, ScipyDIRECTOpt(objective), guess=good_guess, lb=lb, ub=ub)
+    _check_accuracy(names, true_params, ScipySHGOOpt(objective), guess=good_guess, lb=lb, ub=ub)
+    _check_accuracy(names, true_params, ScipyBasinHoppingOpt(objective), guess=good_guess, lb=lb, ub=ub)
 
 
 if __name__ == "__main__":
