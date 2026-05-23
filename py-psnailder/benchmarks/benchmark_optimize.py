@@ -536,7 +536,6 @@ def main(raw_args: Sequence[str]) -> None:
         selected = [
             "de",
             "multistart",
-            "dual-annealing",
             "basinhopping",
             "tiktak",
         ]
