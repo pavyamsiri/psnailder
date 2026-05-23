@@ -273,22 +273,37 @@ class TikTakOpt(Optimizer):
         top_points = points[top_indices]
         top_values = values[top_indices]
 
-        best_point = top_points[0]
-        best_value = top_values[0]
-
         # --- Phase 2: iterated local search ---
         bounds = optimize.Bounds(lb=lb, ub=ub)
 
-        for i, (candidate, _) in enumerate(zip(top_points, top_values)):
-            w = TikTakOpt._tiktak_weight(i, n_star)
-            start = (1 - w) * candidate + w * best_point
+        best_points = []
+        best_values = []
+        for _, (candidate, value) in enumerate(zip(top_points, top_values)):
+            best_point = candidate
+            best_value = value
+            for i in range(100):
+                w = TikTakOpt._tiktak_weight(0, n_star)
+                if i == 0:
+                    start = (1 - w) * candidate + w * best_point
+                else:
+                    w = TikTakOpt._tiktak_weight(i, n_star)
+                    start = (1 - w) * candidate + w * best_point
+                res = optimize.minimize(objective, start, method="Nelder-Mead", bounds=bounds)
+                nfev += res.nfev
 
-            res = optimize.minimize(objective, start, method="L-BFGS-B", bounds=bounds)
-            nfev += res.nfev
+                if res.fun < best_value:
+                    best_value = res.fun
+                    best_point = np.array(res.x)
+                converged = np.abs(res.fun - best_value) < 1e-8
+                if converged:
+                    break
+            best_points.append(best_point)
+            best_values.append(best_value)
 
-            if res.fun < best_value:
-                best_value = res.fun
-                best_point = np.array(res.x)
+        best_index = np.argmin(best_values)
+
+        best_point = best_points[best_index]
+        best_value = best_values[best_index]
 
         return (
             best_point,
@@ -306,7 +321,7 @@ OPTIMIZER_REGISTRY: dict[str, Callable[[Objective], Optimizer]] = {
     "direct": lambda obj: ScipyDIRECTOpt(obj),
     "shgo": lambda obj: ScipySHGOOpt(obj),
     "basinhopping": lambda obj: ScipyBasinHoppingOpt(obj),
-    "tiktak": lambda obj: TikTakOpt(obj, num_sobol=2**10),
+    "tiktak": lambda obj: TikTakOpt(obj, num_sobol=2**8),
 }
 
 
