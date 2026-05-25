@@ -148,7 +148,7 @@ fn fit_spiral_rust<'py>(
     vz: PyReadonlyArray1<'py, f64>,
     bounds: Vec<(f64, f64)>,
 ) -> PyResult<(Vec<f64>, f64, u64)> {
-    let tiktak = psnailder_tiktak::TikTak::new(12, 128.0f32.recip(), 0.1, 0.995, 6);
+    let tiktak = psnailder_tiktak::TikTak::new(10, 128.0f32.recip(), 0.1, 0.995, 6);
 
     let data = data.as_slice()?;
     let background = background.as_slice()?;
