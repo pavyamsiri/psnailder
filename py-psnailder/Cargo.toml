@@ -8,10 +8,13 @@ name = "_internal"
 crate-type = ["cdylib"]
 
 [dependencies]
+argmin = { workspace = true }
 itertools = { workspace = true }
 pyo3 = { workspace = true }
 psnailder_core = { workspace = true }
+psnailder_tiktak = { workspace = true }
 numpy = { workspace = true }
+
 
 [features]
 default = []

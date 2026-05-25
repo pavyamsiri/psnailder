@@ -15,5 +15,7 @@ itertools = "0.14.0"
 ndarray = "0.16.0"
 numpy = "0.28.0"
 pyo3 = { version = "0.28.3" }
-psnailder_core = { path = "crates/psnailder_core" }
 sobol = "1.0.2"
+
+psnailder_core = { path = "crates/psnailder_core" }
+psnailder_tiktak = { path = "crates/psnailder_tiktak" }

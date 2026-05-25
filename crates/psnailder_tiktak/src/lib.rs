@@ -9,9 +9,9 @@ use std::collections::BinaryHeap;
 
 #[derive(Debug)]
 pub struct OptimizationResult {
-    params: Vec<f64>,
-    cost: f64,
-    nfev: u64,
+    pub params: Vec<f64>,
+    pub cost: f64,
+    pub nfev: u64,
 }
 
 struct OrderedPoint {
@@ -43,10 +43,10 @@ impl Ord for OrderedPoint {
 }
 
 pub struct TikTak {
-    num_samples: usize,
-    num_star: usize,
-    min_weight: f64,
-    max_weight: f64,
+    pub num_samples: usize,
+    pub num_star: usize,
+    pub min_weight: f64,
+    pub max_weight: f64,
 }
 
 impl TikTak {
@@ -86,7 +86,7 @@ impl TikTak {
 
 impl default::Default for TikTak {
     fn default() -> Self {
-        Self::new(12, 128.0f32.recip(), 0.1, 0.995)
+        Self::new(10, 128.0f32.recip(), 0.1, 0.995)
     }
 }
 
@@ -96,7 +96,7 @@ impl TikTak {
         cost_func: impl CostFunction<Param = Vec<f64>, Output = f64> + Clone + fmt::Debug,
         bounds: &[(f64, f64)],
     ) -> Result<OptimizationResult, Error> {
-        const SIMPLEX_STEP: f64 = 0.025;
+        const SIMPLEX_STEP: f64 = 0.05;
         const SD_TOLERANCE: f64 = 1e-6;
         let ndim = bounds.len();
         let seq = sobol::Sobol::<f64>::new(ndim, &sobol::params::JoeKuoD6::minimal());
@@ -105,8 +105,17 @@ impl TikTak {
         let mut nfev: u64 = self.num_samples as u64;
 
         for point in seq.take(self.num_samples) {
-            let cost = cost_func.cost(&point)?;
-            heap.push(OrderedPoint { cost, point });
+            let scaled_point: Vec<f64> = point
+                .iter()
+                .zip(bounds.iter())
+                .map(|(p, (lb, ub))| lb + p * (ub - lb))
+                .collect();
+
+            let cost = cost_func.cost(&scaled_point)?;
+            heap.push(OrderedPoint {
+                cost,
+                point: scaled_point,
+            });
             // If we are full we evict the current worst
             if heap.len() > self.num_star {
                 heap.pop();

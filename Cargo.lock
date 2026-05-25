@@ -628,9 +628,11 @@ dependencies = [
 name = "py-psnailder"
 version = "0.1.0"
 dependencies = [
+ "argmin",
  "itertools",
  "numpy",
  "psnailder_core",
+ "psnailder_tiktak",
  "pyo3",
 ]
 

@@ -265,7 +265,7 @@ class TikTakOpt(Optimizer):
         # --- Phase 1: Sobol evaluation ---
         rng = np.random.default_rng(seed)
         sobol = stats.qmc.Sobol(d=len(lb), scramble=True, rng=rng)
-        unit_points = sobol.random(n_sobol)
+        unit_points = sobol.random_base2(int(np.log2(n_sobol)))
         points = stats.qmc.scale(unit_points, lb, ub)
         nfev: int = n_sobol
 
@@ -279,35 +279,19 @@ class TikTakOpt(Optimizer):
         # --- Phase 2: iterated local search ---
         bounds = optimize.Bounds(lb=lb, ub=ub)
 
-        best_points = []
-        best_values = []
-        for _, (candidate, value) in enumerate(zip(top_points, top_values)):
+        best_point = top_points[0]
+        best_value = top_values[0]
+        for i, (candidate, value) in enumerate(zip(top_points, top_values)):
             best_point = candidate
             best_value = value
-            for i in range(100):
-                w = TikTakOpt._tiktak_weight(0, n_star)
-                if i == 0:
-                    start = (1 - w) * candidate + w * best_point
-                else:
-                    w = TikTakOpt._tiktak_weight(i, n_star)
-                    start = (1 - w) * candidate + w * best_point
-                res = optimize.minimize(objective, start, method="Nelder-Mead", bounds=bounds)
-                nfev += res.nfev
+            w = TikTakOpt._tiktak_weight(i + 1, n_star)
+            start = (1 - w) * candidate + w * best_point
+            res = optimize.minimize(objective, start, method="Nelder-Mead", bounds=bounds)
+            nfev += res.nfev
 
-                if res.fun < best_value:
-                    best_value = res.fun
-                    best_point = np.array(res.x)
-                converged = np.abs(res.fun - best_value) < 1e-8
-                if converged:
-                    break
-            best_points.append(best_point)
-            best_values.append(best_value)
-
-        best_index = np.argmin(best_values)
-
-        best_point = best_points[best_index]
-        best_value = best_values[best_index]
-
+            if res.fun < best_value:
+                best_value = res.fun
+                best_point = np.array(res.x)
         return (
             best_point,
             best_value,
@@ -315,20 +299,56 @@ class TikTakOpt(Optimizer):
         )
 
 
-OPTIMIZER_REGISTRY: dict[str, Callable[[Objective], Optimizer]] = {
-    "lbfgsb": lambda obj: ScipyLBFGSBOpt(obj),
-    "lbfgsb-nm": lambda obj: ScipyLBFGSBToNMOpt(obj),
-    "de": lambda obj: ScipyDEOpt(obj),
-    "multistart": lambda obj: ScipyNaiveMultistartOpt(obj, seed=42),
-    "dual-annealing": lambda obj: ScipyDualAnnealingOpt(obj),
-    "direct": lambda obj: ScipyDIRECTOpt(obj),
-    "shgo": lambda obj: ScipySHGOOpt(obj),
-    "basinhopping": lambda obj: ScipyBasinHoppingOpt(obj),
-    "tiktak": lambda obj: TikTakOpt(obj, num_sobol=2**10),
+class RustTikTakOpt(Optimizer):
+    def __init__(self, data_ctx: dict[str, onp.ArrayND[np.float64, Any]]) -> None:
+        self.data_ctx = data_ctx
+
+    @override
+    def name(self) -> str:
+        return "rust tiktak optimizer"
+
+    @override
+    def minimize(
+        self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
+    ) -> tuple[onp.Array1D[np.float64], float, int]:
+        rust_lb = lb.copy()
+        rust_ub = ub.copy()
+        # Parameter 1 (b) and 4 (scale_factor) are in log-space in Rust
+        rust_lb[1] = np.log(lb[1])
+        rust_ub[1] = np.log(ub[1])
+        rust_lb[4] = np.log(lb[4])
+        rust_ub[4] = np.log(ub[4])
+
+        bounds = list(zip(rust_lb.tolist(), rust_ub.tolist(), strict=True))
+        params, cost, nfev = _internal.fit_spiral_rust(
+            self.data_ctx["density"].ravel(),
+            self.data_ctx["background"].ravel(),
+            self.data_ctx["mask"].ravel(),
+            self.data_ctx["z"].ravel(),
+            self.data_ctx["vz"].ravel(),
+            bounds,
+        )
+        params = np.array(params)
+        params[1] = np.exp(params[1])
+        params[4] = np.exp(params[4])
+        return (params, cost, int(nfev))
+
+
+OPTIMIZER_REGISTRY: dict[str, Callable[[Objective, dict[str, Any]], Optimizer]] = {
+    "lbfgsb": lambda obj, ctx: ScipyLBFGSBOpt(obj),
+    "lbfgsb-nm": lambda obj, ctx: ScipyLBFGSBToNMOpt(obj),
+    "de": lambda obj, ctx: ScipyDEOpt(obj),
+    "multistart": lambda obj, ctx: ScipyNaiveMultistartOpt(obj, seed=42),
+    "dual-annealing": lambda obj, ctx: ScipyDualAnnealingOpt(obj),
+    "direct": lambda obj, ctx: ScipyDIRECTOpt(obj),
+    "shgo": lambda obj, ctx: ScipySHGOOpt(obj),
+    "basinhopping": lambda obj, ctx: ScipyBasinHoppingOpt(obj),
+    "tiktak": lambda obj, ctx: TikTakOpt(obj, num_sobol=2**10),
+    "rust-tiktak": lambda obj, ctx: RustTikTakOpt(ctx),
 }
 
 
-def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) -> Objective:
+def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) -> tuple[Objective, dict[str, Any]]:
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
     mock_model = MockModel((signal_comp,), (background_comp,))
@@ -349,6 +369,14 @@ def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) 
     background = num_particles * mock_data.background
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
+
+    data_ctx = {
+        "density": density,
+        "background": background,
+        "mask": mask,
+        "z": x_mesh,
+        "vz": y_mesh,
+    }
 
     if use_rust:
         z_flat = x_mesh.ravel()
@@ -375,7 +403,7 @@ def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) 
             rust_model = _internal.PSpiralModel([rust_comp])
             return -rust_model.evaluate_likelihood(density_flat, background_flat, mask_flat, z_flat, vz_flat)
 
-        return _objective_rust
+        return _objective_rust, data_ctx
     else:
 
         def _objective(parameters: onp.Array1D[np.float64]) -> float:
@@ -389,7 +417,7 @@ def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) 
             )
             return val
 
-        return _objective
+        return _objective, data_ctx
 
 
 def _check_accuracy(
@@ -585,7 +613,7 @@ def main(raw_args: Sequence[str]) -> None:
         [signal_comp.alpha, signal_comp.b, signal_comp.c, signal_comp.theta0, signal_comp.scale_factor, signal_comp.rho]
     )
 
-    objective = _create_objective(signal_comp, use_rust=args.use_rust)
+    objective, data_ctx = _create_objective(signal_comp, use_rust=args.use_rust)
     good_guess = np.array([0.5, 0.05, 0.002, 0.0, 42.0, 0.09])
 
     optimizer_selection: list[str] = list(args.optimizers)
@@ -597,10 +625,11 @@ def main(raw_args: Sequence[str]) -> None:
             "multistart",
             "basinhopping",
             "tiktak",
+            "rust-tiktak",
         ]
     else:
         selected = optimizer_selection
-    optimizers = [OPTIMIZER_REGISTRY[name](objective) for name in selected]
+    optimizers = [OPTIMIZER_REGISTRY[name](objective, data_ctx) for name in selected]
 
     num_random: int = int(args.num_random)
     seed: int = int(args.seed)
