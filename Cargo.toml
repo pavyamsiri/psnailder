@@ -2,11 +2,18 @@
 members = [
     "crates/psnailder_core",
     "py-psnailder",
+    "crates/psnailder_tiktak",
 ]
 resolver = "3"
 
 [workspace.dependencies]
+argmin = "0.11.0"
+argmin-math = { version = "0.5.1", features = ["ndarray_latest"] }
+argmin-observer-slog = "0.2.0"
+argmin_testfunctions = "0.3.0"
 itertools = "0.14.0"
+ndarray = "0.16.0"
 numpy = "0.28.0"
 pyo3 = { version = "0.28.3" }
 psnailder_core = { path = "crates/psnailder_core" }
+sobol = "1.0.2"

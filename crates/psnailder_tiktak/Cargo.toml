@@ -1,0 +1,12 @@
+[package]
+name = "psnailder_tiktak"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+argmin = { workspace = true }
+argmin-math = { workspace = true }
+argmin-observer-slog = { workspace = true }
+argmin_testfunctions = { workspace = true }
+ndarray = { workspace = true }
+sobol = { workspace = true }
