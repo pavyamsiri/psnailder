@@ -15,7 +15,7 @@ from phasmix.mock import MockModel
 from rich.table import Table
 from scipy import optimize, stats
 
-from psnailder import fit, model
+from psnailder import fit, model, _internal
 from psnailder._likelihood_utils import ln_likelihood
 
 if TYPE_CHECKING:
@@ -229,10 +229,11 @@ class ScipyBasinHoppingOpt(Optimizer):
 
 
 class TikTakOpt(Optimizer):
-    def __init__(self, objective: Objective, num_sobol: int = 2**12, n_star: int | None = None) -> None:
+    def __init__(self, objective: Objective, num_sobol: int = 2**12, n_star: int | None = None, seed: int | None = None) -> None:
         self.objective: Objective = objective
         self.n_sobol: int = num_sobol
         self.n_star: int | None = n_star
+        self.seed: int | None = seed
 
     @override
     def name(self) -> str:
@@ -242,7 +243,7 @@ class TikTakOpt(Optimizer):
     def minimize(
         self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
     ) -> tuple[onp.Array1D[np.float64], float, int]:
-        return TikTakOpt.tiktak(self.objective, lb, ub, n_sobol=self.n_sobol, n_star=self.n_star)
+        return TikTakOpt.tiktak(self.objective, lb, ub, n_sobol=self.n_sobol, n_star=self.n_star, seed=self.seed)
 
     @staticmethod
     def _tiktak_weight(iteration: int, n_sobol: int, w_min: float = 0.1, w_max: float = 0.995) -> float:
@@ -256,12 +257,14 @@ class TikTakOpt(Optimizer):
         ub: onp.Array1D[np.float64],
         n_sobol: int = 2**12,
         n_star: int | None = None,
+        seed: int | None = None,
     ) -> tuple[onp.Array1D[np.float64], float, int]:
         if n_star is None:
             n_star = n_sobol // 2**7
 
         # --- Phase 1: Sobol evaluation ---
-        sobol = stats.qmc.Sobol(d=len(lb), scramble=True)
+        rng = np.random.default_rng(seed)
+        sobol = stats.qmc.Sobol(d=len(lb), scramble=True, rng=rng)
         unit_points = sobol.random(n_sobol)
         points = stats.qmc.scale(unit_points, lb, ub)
         nfev: int = n_sobol
@@ -321,11 +324,11 @@ OPTIMIZER_REGISTRY: dict[str, Callable[[Objective], Optimizer]] = {
     "direct": lambda obj: ScipyDIRECTOpt(obj),
     "shgo": lambda obj: ScipySHGOOpt(obj),
     "basinhopping": lambda obj: ScipyBasinHoppingOpt(obj),
-    "tiktak": lambda obj: TikTakOpt(obj, num_sobol=2**8),
+    "tiktak": lambda obj: TikTakOpt(obj, num_sobol=2**10),
 }
 
 
-def _create_objective(signal_comp: AlinderComponent) -> Objective:
+def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) -> Objective:
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
     mock_model = MockModel((signal_comp,), (background_comp,))
@@ -347,18 +350,46 @@ def _create_objective(signal_comp: AlinderComponent) -> Objective:
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
 
-    def _objective(parameters: onp.Array1D[np.float64]) -> float:
-        nonlocal x_mesh, y_mesh, background
-        prediction = model.PSpiralModel(parameters.reshape((1, 6)), x_mesh, y_mesh, background, winding=1).prediction()
+    if use_rust:
+        z_flat = x_mesh.ravel()
+        vz_flat = y_mesh.ravel()
+        density_flat = density.ravel()
+        background_flat = background.ravel()
+        mask_flat = mask.ravel()
 
-        val = -ln_likelihood(
-            density,
-            prediction,
-            mask,
-        )
-        return val
+        def _objective_rust(parameters: onp.Array1D[np.float64]) -> float:
+            # Convert Python parameters to Rust format
+            # Python: [alpha, b, c, theta0, scale_factor, rho]
+            # Rust:   [alpha, lnb, c, theta0, scale_factor (log), rho, winding, flattening_strength]
+            alpha, b, c, theta0, scale_factor, rho = parameters
+            rust_comp = _internal.PSpiralComponent(
+                alpha=alpha,
+                lnb=np.log(b),
+                c=c,
+                theta0=theta0,
+                scale_factor=np.log(scale_factor),
+                rho=rho,
+                winding=1,
+                flattening_strength=0.1,
+            )
+            rust_model = _internal.PSpiralModel([rust_comp])
+            return -rust_model.evaluate_likelihood(density_flat, background_flat, mask_flat, z_flat, vz_flat)
 
-    return _objective
+        return _objective_rust
+    else:
+
+        def _objective(parameters: onp.Array1D[np.float64]) -> float:
+            nonlocal x_mesh, y_mesh, background
+            prediction = model.PSpiralModel(parameters.reshape((1, 6)), x_mesh, y_mesh, background, winding=1).prediction()
+
+            val = -ln_likelihood(
+                density,
+                prediction,
+                mask,
+            )
+            return val
+
+        return _objective
 
 
 def _check_accuracy(
@@ -525,24 +556,37 @@ def _report_result(names, truth, estimated, ll):
 
 def main(raw_args: Sequence[str]) -> None:
     args = _parse_args(raw_args)
+    pseed: int | None = int(args.pseed) if args.pseed is not None else None
     names: list[str] = ["alpha", "b", "c", "theta0", "S", "rho"]
-    signal_comp = AlinderComponent(
-        alpha=0.5,
-        b=0.05,
-        c=0.002,
-        theta0=0.0,
-        scale_factor=40.00,
-        rho=0.09,
-        winding=1,
-    )
+    lb: onp.Array1D[np.float64] = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
+    ub: onp.Array1D[np.float64] = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
+
+    if pseed is None:
+        signal_comp = AlinderComponent(
+            alpha=0.5,
+            b=0.05,
+            c=0.002,
+            theta0=0.0,
+            scale_factor=40.00,
+            rho=0.09,
+            winding=1,
+        )
+    else:
+        rng = np.random.default_rng(pseed)
+        signal_comp = AlinderComponent(
+            alpha=rng.uniform(low=lb[0], high=ub[0]),
+            b=rng.uniform(low=lb[1], high=ub[1]),
+            c=rng.uniform(low=lb[2], high=ub[2]),
+            theta0=rng.uniform(low=lb[3], high=ub[3]),
+            scale_factor=rng.uniform(low=lb[4], high=ub[4]),
+            rho=rng.uniform(low=lb[5], high=ub[5]),
+        )
     true_params = np.array(
         [signal_comp.alpha, signal_comp.b, signal_comp.c, signal_comp.theta0, signal_comp.scale_factor, signal_comp.rho]
     )
 
-    objective = _create_objective(signal_comp)
+    objective = _create_objective(signal_comp, use_rust=args.use_rust)
     good_guess = np.array([0.5, 0.05, 0.002, 0.0, 42.0, 0.09])
-    lb: onp.Array1D[np.float64] = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
-    ub: onp.Array1D[np.float64] = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
 
     optimizer_selection: list[str] = list(args.optimizers)
     if "all" in optimizer_selection:
@@ -560,6 +604,11 @@ def main(raw_args: Sequence[str]) -> None:
 
     num_random: int = int(args.num_random)
     seed: int = int(args.seed)
+
+    if args.use_rust:
+        rich.print("[cyan]Using Rust PSpiralModel for predictions[/cyan]")
+    else:
+        rich.print("[cyan]Using Python PSpiralModel for predictions[/cyan]")
 
     reports = [
         _check_accuracy(names, true_params, opt, guess=good_guess, lb=lb, ub=ub, num_random=num_random, seed=seed)
@@ -587,6 +636,12 @@ def _parse_args(raw_args: Sequence[str]) -> argparse.Namespace:
         help="Number of random restarts per optimizer (default: 10).",
     )
     _ = parser.add_argument("--seed", type=int, default=42, help="RNG seed for random guesses (default: 42).")
+    _ = parser.add_argument("--pseed", type=int, dest="pseed", help="RNG seed for parameters. (default: 53).")
+    _ = parser.add_argument(
+        "--use-rust",
+        action="store_true",
+        help="Use the Rust PSpiralModel for predictions instead of the Python implementation.",
+    )
     return parser.parse_args(raw_args)
 
 
