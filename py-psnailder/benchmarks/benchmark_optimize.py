@@ -321,6 +321,7 @@ class RustTikTakOpt(Optimizer):
             bounds,
         )
         params = np.array(params)
+        params[3] %= np.pi
         return (params, cost, int(nfev))
 
 
@@ -459,6 +460,7 @@ def _report_result(names: Sequence[str], truth: onp.Array1D[np.float64], estimat
 
     is_good = True
     for name, gt, est in zip(names, truth, estimated, strict=True):
+        raise ValueError(f"{name}")
         is_close = np.isclose(gt, est, rtol=1e-3, atol=5e-4)
         equality = "~" if is_close else "!="
         is_good &= is_close

@@ -200,25 +200,23 @@ impl<'py> CostFunction for PSpiralModel1DProblem<'py> {
     type Output = f64;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
-        let model = psnailder_core::PSpiralModel {
-            components: vec![psnailder_core::PSpiralComponent {
-                alpha: param[0],
-                b: param[1],
-                c: param[2],
-                theta0: param[3],
-                scale_factor: param[4],
-                rho: param[5],
-                winding: 1,
-                flattening_strength: 0.1,
-            }],
+        let comp = psnailder_core::PSpiralComponent {
+            alpha: param[0],
+            b: param[1],
+            c: param[2],
+            theta0: param[3],
+            scale_factor: param[4],
+            rho: param[5],
+            winding: 1,
+            flattening_strength: 0.1,
         };
-        let mut out = vec![0.0; self.z.len()];
-        model.perturbation_vec(self.z, self.vz, &mut out);
 
+        let mut out = vec![0.0; self.data.len()];
+        comp.perturbation_vec(self.z, self.vz, &mut out);
         let prediction: Vec<f64> = out
-            .iter()
+            .into_iter()
             .zip(self.background.iter())
-            .map(|(oo, bb)| *bb * *oo)
+            .map(|(p, b)| p * b)
             .collect();
 
         Ok(-psnailder_core::ln_likelihood_f64(
