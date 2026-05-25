@@ -622,6 +622,7 @@ dependencies = [
  "argmin_testfunctions",
  "ndarray 0.16.1",
  "sobol",
+ "sobol_burley",
 ]
 
 [[package]]
@@ -889,6 +890,12 @@ dependencies = [
  "libflate",
  "num-traits",
 ]
+
+[[package]]
+name = "sobol_burley"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09f37cae1d97c4078377153ede7a26f7813b689ad5c6b76ff45dc52e53afe1d1"
 
 [[package]]
 name = "syn"

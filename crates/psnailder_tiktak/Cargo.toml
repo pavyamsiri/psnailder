@@ -10,3 +10,4 @@ argmin-observer-slog = { workspace = true }
 argmin_testfunctions = { workspace = true }
 ndarray = { workspace = true }
 sobol = { workspace = true }
+sobol_burley = { workspace = true }

@@ -91,7 +91,7 @@ impl PSpiralComponent {
     #[new]
     fn new(
         alpha: f64,
-        lnb: f64,
+        b: f64,
         c: f64,
         theta0: f64,
         scale_factor: f64,
@@ -101,7 +101,7 @@ impl PSpiralComponent {
     ) -> Self {
         Self(psnailder_core::PSpiralComponent {
             alpha,
-            lnb,
+            b,
             c,
             theta0,
             scale_factor,
@@ -148,12 +148,7 @@ fn fit_spiral_rust<'py>(
     vz: PyReadonlyArray1<'py, f64>,
     bounds: Vec<(f64, f64)>,
 ) -> PyResult<(Vec<f64>, f64, u64)> {
-    let tiktak = psnailder_tiktak::TikTak {
-        num_samples: 2 << 12,
-        num_star: 2 << 5,
-        min_weight: 0.1,
-        max_weight: 0.995,
-    };
+    let tiktak = psnailder_tiktak::TikTak::new(12, 128.0f32.recip(), 0.1, 0.995, 6);
 
     let data = data.as_slice()?;
     let background = background.as_slice()?;
@@ -208,7 +203,7 @@ impl<'py> CostFunction for PSpiralModel1DProblem<'py> {
         let model = psnailder_core::PSpiralModel {
             components: vec![psnailder_core::PSpiralComponent {
                 alpha: param[0],
-                lnb: param[1],
+                b: param[1],
                 c: param[2],
                 theta0: param[3],
                 scale_factor: param[4],
@@ -242,7 +237,7 @@ fn optimize_parameters<'py>(
     z: PyReadonlyArray1<'py, f64>,
     vz: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<PSpiralComponent> {
-    let tiktak = psnailder_tiktak::TikTak::default();
+    let tiktak = psnailder_tiktak::TikTak::new(12, 128.0f32.recip(), 0.1, 0.995, 6);
 
     let data = data.as_slice()?;
     let background = background.as_slice()?;
@@ -261,16 +256,10 @@ fn optimize_parameters<'py>(
             },
             &[
                 (0.0, 1.0),
-                (
-                    0.005f64.log(core::f64::consts::E),
-                    0.1f64.log(core::f64::consts::E),
-                ),
+                (0.005f64, 0.1f64),
                 (0.0, 0.004),
                 (-core::f64::consts::PI, core::f64::consts::PI),
-                (
-                    30.00f64.log(core::f64::consts::E),
-                    70.0f64.log(core::f64::consts::E),
-                ),
+                (30.00f64, 70.0f64),
                 (0.0, 0.18),
             ],
         )
@@ -278,7 +267,7 @@ fn optimize_parameters<'py>(
 
     let best_model = PSpiralComponent(psnailder_core::PSpiralComponent {
         alpha: res.params[0],
-        lnb: res.params[1],
+        b: res.params[1],
         c: res.params[2],
         theta0: res.params[3],
         scale_factor: res.params[4],

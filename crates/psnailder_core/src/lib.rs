@@ -48,7 +48,7 @@ impl PSpiralModel {
 #[derive(Clone, Debug)]
 pub struct PSpiralComponent {
     pub alpha: f64,
-    pub lnb: f64,
+    pub b: f64,
     pub c: f64,
     pub theta0: f64,
     pub scale_factor: f64,
@@ -66,7 +66,7 @@ impl PSpiralComponent {
     #[inline]
     pub fn spiral_phase(&self, r: f64) -> f64 {
         let abs_c = self.c.abs();
-        let abs_b = self.lnb.exp().abs();
+        let abs_b = self.b.abs();
         if abs_c > 1e-10 {
             let half_b_over_c = 0.5 * abs_b / abs_c;
             let term = half_b_over_c * half_b_over_c + r / abs_c;
@@ -78,7 +78,7 @@ impl PSpiralComponent {
 
     #[inline]
     pub fn perturbation_scalar(&self, z: f64, vz: f64) -> f64 {
-        let scale_factor = self.scale_factor.exp();
+        let scale_factor = self.scale_factor;
         let scaled_z = z * scale_factor;
         let scaled_vz = vz / scale_factor;
 

@@ -1,9 +1,8 @@
 use argmin::{
-    core::{CostFunction, Error, Executor, Problem, State},
+    core::{CostFunction, Error, Executor, State},
     solver::neldermead::NelderMead,
 };
 use argmin_testfunctions::rosenbrock;
-use core::default;
 use core::{cmp, fmt};
 use std::collections::BinaryHeap;
 
@@ -47,14 +46,18 @@ pub struct TikTak {
     pub num_star: usize,
     pub min_weight: f64,
     pub max_weight: f64,
+    pub ndim: usize,
+
+    pub points: Vec<Vec<f64>>,
 }
 
 impl TikTak {
-    pub const fn new(
+    pub fn new(
         log_num_samples: u8,
         keep_ratio: f32,
         min_weight: f64,
         max_weight: f64,
+        ndim: usize,
     ) -> TikTak {
         assert!(log_num_samples <= 16);
         assert!(log_num_samples > 0);
@@ -75,18 +78,30 @@ impl TikTak {
             num_star = 1;
         }
 
+        let points = (0..num_samples)
+            .map(|i| {
+                let mut point = Vec::with_capacity(ndim);
+                let num_batches = ndim / 4 + 1;
+                for dimension_set in 0..num_batches {
+                    point.extend(
+                        sobol_burley::sample_4d(i as u32, dimension_set as u32, 0)
+                            .into_iter()
+                            .map(|v| v as f64),
+                    );
+                }
+                point.truncate(ndim);
+                point
+            })
+            .collect();
+
         Self {
             num_samples,
             num_star,
             min_weight,
             max_weight,
+            ndim,
+            points,
         }
-    }
-}
-
-impl default::Default for TikTak {
-    fn default() -> Self {
-        Self::new(10, 128.0f32.recip(), 0.1, 0.995)
     }
 }
 
@@ -99,12 +114,12 @@ impl TikTak {
         const SIMPLEX_STEP: f64 = 0.05;
         const SD_TOLERANCE: f64 = 1e-6;
         let ndim = bounds.len();
-        let seq = sobol::Sobol::<f64>::new(ndim, &sobol::params::JoeKuoD6::minimal());
+
         let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
         let mut nfev: u64 = self.num_samples as u64;
 
-        for point in seq.take(self.num_samples) {
+        for point in self.points.iter() {
             let scaled_point: Vec<f64> = point
                 .iter()
                 .zip(bounds.iter())
@@ -207,7 +222,7 @@ impl CostFunction for Rosenbrock {
 }
 
 pub fn run() -> Result<(), Error> {
-    let tiktak = TikTak::new(10, 128.0f32.recip(), 0.1, 0.995);
+    let tiktak = TikTak::new(10, 128.0f32.recip(), 0.1, 0.995, 2);
     let res = tiktak.minimize(Rosenbrock, &[(-5.0, 5.0), (-5.0, 5.0)])?;
     println!("{res:?}");
     Ok(())

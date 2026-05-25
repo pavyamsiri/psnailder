@@ -311,15 +311,7 @@ class RustTikTakOpt(Optimizer):
     def minimize(
         self, guess: onp.Array1D[np.float64], lb: onp.Array1D[np.float64], ub: onp.Array1D[np.float64]
     ) -> tuple[onp.Array1D[np.float64], float, int]:
-        rust_lb = lb.copy()
-        rust_ub = ub.copy()
-        # Parameter 1 (b) and 4 (scale_factor) are in log-space in Rust
-        rust_lb[1] = np.log(lb[1])
-        rust_ub[1] = np.log(ub[1])
-        rust_lb[4] = np.log(lb[4])
-        rust_ub[4] = np.log(ub[4])
-
-        bounds = list(zip(rust_lb.tolist(), rust_ub.tolist(), strict=True))
+        bounds = list(zip(lb.tolist(), ub.tolist(), strict=True))
         params, cost, nfev = _internal.fit_spiral_rust(
             self.data_ctx["density"].ravel(),
             self.data_ctx["background"].ravel(),
@@ -329,8 +321,6 @@ class RustTikTakOpt(Optimizer):
             bounds,
         )
         params = np.array(params)
-        params[1] = np.exp(params[1])
-        params[4] = np.exp(params[4])
         return (params, cost, int(nfev))
 
 

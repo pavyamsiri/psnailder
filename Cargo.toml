@@ -16,6 +16,7 @@ ndarray = "0.16.0"
 numpy = "0.28.0"
 pyo3 = { version = "0.28.3" }
 sobol = "1.0.2"
+sobol_burley = "0.5.0"
 
 psnailder_core = { path = "crates/psnailder_core" }
 psnailder_tiktak = { path = "crates/psnailder_tiktak" }
