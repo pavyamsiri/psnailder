@@ -1,0 +1,9 @@
+[package]
+name = "psnailder_mock"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+itertools = { workspace = true }
+rand = { workspace = true }
+psnailder_core = { workspace = true }
