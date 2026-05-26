@@ -58,7 +58,7 @@ pub struct PSpiralComponent {
 }
 
 #[inline]
-fn expit(x: f64) -> f64 {
+pub fn expit(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 

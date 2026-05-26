@@ -67,7 +67,7 @@ fn main() {
     let num_y_bins = 1000;
     let x_edges = linspace(-1.2, 1.2, num_x_bins + 1);
     let y_edges = linspace(-60.0, 60.0, num_y_bins + 1);
-    let mock_result = model.mock_grid(&x_edges, &y_edges);
+    let mock_result = model.mock_grid(&x_edges, &y_edges, 1_000_000);
 
     print_grid(&mock_result);
 }

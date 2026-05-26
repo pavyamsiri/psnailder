@@ -41,24 +41,22 @@ impl Ord for OrderedPoint {
     }
 }
 
-pub struct TikTak {
+pub struct TikTak<const N: usize> {
     pub num_samples: usize,
     pub num_star: usize,
     pub min_weight: f64,
     pub max_weight: f64,
-    pub ndim: usize,
 
     pub points: Vec<Vec<f64>>,
 }
 
-impl TikTak {
+impl<const N: usize> TikTak<N> {
     pub fn new(
         log_num_samples: u8,
         keep_ratio: f32,
         min_weight: f64,
         max_weight: f64,
-        ndim: usize,
-    ) -> TikTak {
+    ) -> TikTak<N> {
         assert!(log_num_samples <= 16);
         assert!(log_num_samples > 0);
         assert!(keep_ratio > 0.0);
@@ -66,6 +64,8 @@ impl TikTak {
         assert!(min_weight < max_weight);
         assert!(min_weight >= 0.0);
         assert!(max_weight <= 1.0);
+
+        let ndim = N;
 
         let num_samples = 2 << log_num_samples;
         assert!(num_samples >= 1);
@@ -99,13 +99,12 @@ impl TikTak {
             num_star,
             min_weight,
             max_weight,
-            ndim,
             points,
         }
     }
 }
 
-impl TikTak {
+impl<const N: usize> TikTak<N> {
     pub fn minimize(
         &self,
         cost_func: impl CostFunction<Param = Vec<f64>, Output = f64> + Clone + fmt::Debug,
@@ -222,7 +221,7 @@ impl CostFunction for Rosenbrock {
 }
 
 pub fn run() -> Result<(), Error> {
-    let tiktak = TikTak::new(10, 128.0f32.recip(), 0.1, 0.995, 2);
+    let tiktak = TikTak::<2>::new(10, 128.0f32.recip(), 0.1, 0.995);
     let res = tiktak.minimize(Rosenbrock, &[(-5.0, 5.0), (-5.0, 5.0)])?;
     println!("{res:?}");
     Ok(())

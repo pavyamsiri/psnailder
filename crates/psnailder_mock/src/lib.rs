@@ -127,9 +127,16 @@ impl MockModel {
         out_background.iter_mut().for_each(|oo| *oo /= norm);
     }
 
-    pub fn mock_grid(&self, x_edges: &[f64], y_edges: &[f64]) -> MockGridResult {
+    pub fn mock_grid(
+        &self,
+        x_edges: &[f64],
+        y_edges: &[f64],
+        num_particles: usize,
+    ) -> MockGridResult {
         assert!(x_edges.len() >= 2);
         assert!(y_edges.len() >= 2);
+
+        let num_particles = num_particles as f64;
 
         let num_x = x_edges.len() - 1;
         let num_y = y_edges.len() - 1;
@@ -152,6 +159,14 @@ impl MockModel {
                 mesh_y.push(y_cen);
             }
         }
+
+        let norm = density.iter().sum::<f64>();
+        density
+            .iter_mut()
+            .for_each(|oo| *oo = num_particles * *oo / norm);
+        background
+            .iter_mut()
+            .for_each(|oo| *oo = num_particles * *oo / norm);
 
         MockGridResult {
             density,

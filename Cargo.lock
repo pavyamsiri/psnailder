@@ -722,6 +722,13 @@ version = "0.0.0"
 [[package]]
 name = "psnailder_fit"
 version = "0.0.0"
+dependencies = [
+ "argmin",
+ "itertools",
+ "psnailder_core",
+ "psnailder_mock",
+ "psnailder_tiktak",
+]
 
 [[package]]
 name = "psnailder_mock"
