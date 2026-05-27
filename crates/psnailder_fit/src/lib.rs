@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use argmin::core::CostFunction;
-use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_f64};
+use psnailder_core::{ln_likelihood_f64, PSpiralComponent, PSpiralModel};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
@@ -28,16 +30,20 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
             flattening_strength: 0.1,
         };
 
-        let mut out = vec![0.0; self.data.len()];
-        comp.perturbation_vec(self.x, self.y, &mut out);
-        let prediction: Vec<f64> = out
-            .into_iter()
-            .zip(self.background.iter())
-            .map(|(p, b)| p * b)
-            .collect();
+        let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
+            .map(|(d, x, y, bg, m)| {
+                let p = comp.perturbation_scalar(*x, *y);
+                let pred = p * bg;
+                if pred <= 0.0 {
+                    0.0
+                } else {
+                    let residual = m * (d - pred);
+                    (residual * residual) / pred
+                }
+            })
+            .sum();
 
-        let res = -psnailder_core::ln_likelihood_f64(self.data, &prediction, self.mask);
-        Ok(res)
+        Ok(0.5 * res)
     }
 }
 
@@ -67,18 +73,21 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
             flattening_strength: 0.1,
         };
 
-        let mut out1 = vec![0.0; self.data.len()];
-        let mut out2 = vec![0.0; self.data.len()];
-        comp1.perturbation_vec(self.x, self.y, &mut out1);
-        comp2.perturbation_vec(self.x, self.y, &mut out2);
+        let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
+            .map(|(d, x, y, bg, m)| {
+                let p1 = comp1.perturbation_scalar(*x, *y);
+                let p2 = comp2.perturbation_scalar(*x, *y);
+                let pred = p1.max(p2) * bg;
+                if pred <= 0.0 {
+                    0.0
+                } else {
+                    let residual = m * (d - pred);
+                    (residual * residual) / pred
+                }
+            })
+            .sum();
 
-        let prediction: Vec<f64> =
-            itertools::izip!(out1.into_iter(), out2.iter(), self.background.iter())
-                .map(|(p1, p2, bb)| p1.max(*p2) * bb)
-                .collect();
-
-        let res = -psnailder_core::ln_likelihood_f64(self.data, &prediction, self.mask);
-        Ok(res)
+        Ok(0.5 * res)
     }
 }
 
@@ -122,11 +131,11 @@ pub struct PSpiralFitter {
 
 #[derive(Debug, Clone)]
 pub struct PSpiralFitResult {
-    pub data: Vec<f64>,
+    pub data: Arc<[f64]>,
     pub initial_model: PSpiralModel,
-    pub initial_background: Vec<f64>,
+    pub initial_background: Arc<[f64]>,
     pub final_model: PSpiralModel,
-    pub final_background: Vec<f64>,
+    pub final_background: Arc<[f64]>,
     pub num_iterations: usize,
     pub max_iterations: Option<usize>,
     pub converged: bool,
@@ -135,12 +144,12 @@ pub struct PSpiralFitResult {
 
 pub struct PSpiralFitterIterative<'a> {
     pub fitter: &'a PSpiralFitter,
-    pub initial_density: Vec<f64>,
-    pub initial_background: Vec<f64>,
-    pub current_background: Vec<f64>,
-    pub mask: Vec<f64>,
-    pub mesh_x: Vec<f64>,
-    pub mesh_y: Vec<f64>,
+    pub initial_density: Arc<[f64]>,
+    pub initial_background: Arc<[f64]>,
+    pub current_background: Arc<[f64]>,
+    pub mask: Arc<[f64]>,
+    pub mesh_x: Arc<[f64]>,
+    pub mesh_y: Arc<[f64]>,
     pub shape: (usize, usize),
     pub num_components: usize,
     pub best_winding: Option<i8>,
@@ -155,12 +164,10 @@ pub struct PSpiralFitterIterative<'a> {
     pub is_finished: bool,
 }
 
-fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Vec<f64> {
+fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64]> {
     let (rows, cols) = shape;
-    let mut out = data.to_vec();
-
     if sigma <= 0.0 {
-        return out;
+        return Arc::from(data);
     }
 
     let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
@@ -177,16 +184,18 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Vec<f64>
         kernel[i] /= sum;
     }
 
+    let mut out = ndarray::Array2::from_shape_vec(shape, data.to_vec()).unwrap();
+    let mut temp = ndarray::Array2::zeros(shape);
+
     // Horizontal pass
-    let mut temp = vec![0.0; rows * cols];
     for r in 0..rows {
         for c in 0..cols {
             let mut val = 0.0;
             for i in 0..kernel_size {
                 let cc = (c as i32 + i as i32 - half_size).clamp(0, cols as i32 - 1) as usize;
-                val += out[r * cols + cc] * kernel[i];
+                val += out[[r, cc]] * kernel[i];
             }
-            temp[r * cols + c] = val;
+            temp[[r, c]] = val;
         }
     }
 
@@ -196,13 +205,13 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Vec<f64>
             let mut val = 0.0;
             for i in 0..kernel_size {
                 let rr = (r as i32 + i as i32 - half_size).clamp(0, rows as i32 - 1) as usize;
-                val += temp[rr * cols + c] * kernel[i];
+                val += temp[[rr, c]] * kernel[i];
             }
-            out[r * cols + c] = val;
+            out[[r, c]] = val;
         }
     }
 
-    out
+    Arc::from(out.into_raw_vec())
 }
 
 impl<'a> Iterator for PSpiralFitterIterative<'a> {
@@ -213,11 +222,11 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             return None;
         }
 
-        if let Some(max_iter) = self.max_iterations
-            && self.iteration_index >= max_iter
-        {
-            self.is_finished = true;
-            return None;
+        if let Some(max_iter) = self.max_iterations {
+            if self.iteration_index >= max_iter {
+                self.is_finished = true;
+                return None;
+            }
         }
 
         self.iteration_index += 1;
@@ -300,11 +309,11 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             self.converged = true;
             self.is_finished = true;
             return Some(PSpiralFitResult {
-                data: self.initial_density.clone(),
+                data: Arc::clone(&self.initial_density),
                 initial_model: self.initial_model.clone().unwrap(),
-                initial_background: self.initial_background.clone(),
+                initial_background: Arc::clone(&self.initial_background),
                 final_model: self.best_model.clone().unwrap(),
-                final_background: self.current_background.clone(),
+                final_background: Arc::clone(&self.current_background),
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
@@ -316,27 +325,30 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         let mut current_perturbation = vec![0.0; self.initial_density.len()];
         current_model.perturbation_vec(&self.mesh_x, &self.mesh_y, &mut current_perturbation);
 
-        let mut next_background: Vec<f64> = self
+        let next_background: Vec<f64> = self
             .initial_density
             .iter()
             .zip(current_perturbation.iter())
             .map(|(d, p)| d / p.max(1e-10))
             .collect();
 
-        next_background = gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
+        let blurred_background = gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
+        let mut blurred_background_vec = blurred_background.to_vec();
 
-        let next_bg_sum: f64 = next_background.iter().sum();
+        let next_bg_sum: f64 = blurred_background_vec.iter().sum();
         let density_sum: f64 = self.initial_density.iter().sum();
         if next_bg_sum > 0.0 {
-            for b in next_background.iter_mut() {
-                *b = *b / next_bg_sum * density_sum;
+            let scale = density_sum / next_bg_sum;
+            for b in blurred_background_vec.iter_mut() {
+                *b *= scale;
             }
         }
+        let next_background_arc: Arc<[f64]> = Arc::from(blurred_background_vec);
 
         // 4. Check quality
         let mut new_data = vec![0.0; self.initial_density.len()];
         for i in 0..new_data.len() {
-            new_data[i] = current_perturbation[i] * next_background[i];
+            new_data[i] = current_perturbation[i] * next_background_arc[i];
         }
         let quality = ln_likelihood_f64(&self.initial_density, &new_data, &self.mask);
 
@@ -347,11 +359,11 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             }
             self.is_finished = true;
             return Some(PSpiralFitResult {
-                data: self.initial_density.clone(),
+                data: Arc::clone(&self.initial_density),
                 initial_model: self.initial_model.clone().unwrap(),
-                initial_background: self.initial_background.clone(),
+                initial_background: Arc::clone(&self.initial_background),
                 final_model: self.best_model.clone().unwrap(),
-                final_background: self.current_background.clone(),
+                final_background: Arc::clone(&self.current_background),
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
@@ -360,15 +372,15 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         }
 
         self.best_quality = quality;
-        self.current_background = next_background;
+        self.current_background = next_background_arc;
         self.best_model = Some(current_model.clone());
 
         Some(PSpiralFitResult {
-            data: self.initial_density.clone(),
+            data: Arc::clone(&self.initial_density),
             initial_model: self.initial_model.clone().unwrap(),
-            initial_background: self.initial_background.clone(),
+            initial_background: Arc::clone(&self.initial_background),
             final_model: current_model,
-            final_background: self.current_background.clone(),
+            final_background: Arc::clone(&self.current_background),
             num_iterations: self.iteration_index,
             max_iterations: self.max_iterations,
             converged: self.converged,
@@ -410,22 +422,24 @@ impl PSpiralFitter {
             );
 
             let ln_norm = initial_density.iter().sum::<f64>().ln();
-            // let aic_single = 2.0 * 6.0 - 2.0 * ll_single;
-            // let aic_double = 2.0 * 12.0 - 2.0 * ll_double;
             let bic_single = ln_norm * 6.0 - 2.0 * ll_single;
             let bic_double = ln_norm * 12.0 - 2.0 * ll_double;
 
-            if bic_double < bic_single { 2 } else { 1 }
+            if bic_double < bic_single {
+                2
+            } else {
+                1
+            }
         };
 
         PSpiralFitterIterative {
             fitter: self,
-            initial_density: initial_density.to_vec(),
-            initial_background: initial_background.to_vec(),
-            current_background: initial_background.to_vec(),
-            mask: mask.to_vec(),
-            mesh_x: mesh_x.to_vec(),
-            mesh_y: mesh_y.to_vec(),
+            initial_density: Arc::from(initial_density),
+            initial_background: Arc::from(initial_background),
+            current_background: Arc::from(initial_background),
+            mask: Arc::from(mask),
+            mesh_x: Arc::from(mesh_x),
+            mesh_y: Arc::from(mesh_y),
             shape,
             num_components: actual_num_components,
             best_winding: winding,
@@ -450,7 +464,7 @@ impl PSpiralFitter {
         mesh_y: &[f64],
         shape: (usize, usize),
     ) -> PSpiralFitResult {
-        let mut iter = self.fit_spiral_with_background_iterative(
+        let mut it = self.fit_spiral_with_background_iterative(
             initial_density,
             initial_background,
             mask,
@@ -462,11 +476,12 @@ impl PSpiralFitter {
             true,
         );
 
-        let mut last_res = None;
-        while let Some(res) = iter.next() {
-            last_res = Some(res);
+        let mut last = None;
+        while let Some(res) = it.next() {
+            last = Some(res);
         }
-        last_res.expect("Fitting failed to produce any result")
+
+        last.expect("should have at least one result")
     }
 }
 
@@ -619,7 +634,7 @@ impl PSpiralFitterND<12> {
             )
             .expect("no errors!");
 
-        let best_model1 = PSpiralComponent {
+        let comp1 = PSpiralComponent {
             alpha: res.params[0],
             b: res.params[1],
             c: res.params[2],
@@ -629,7 +644,7 @@ impl PSpiralFitterND<12> {
             winding,
             flattening_strength: 0.1,
         };
-        let best_model2 = PSpiralComponent {
+        let comp2 = PSpiralComponent {
             alpha: res.params[6],
             b: res.params[7],
             c: res.params[8],
@@ -640,6 +655,6 @@ impl PSpiralFitterND<12> {
             flattening_strength: 0.1,
         };
 
-        (best_model1, best_model2, -res.cost)
+        (comp1, comp2, -res.cost)
     }
 }

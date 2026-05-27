@@ -1,4 +1,4 @@
-use psnailder_core::{PSpiralComponent, create_sigmoid_mask};
+use psnailder_core::{create_sigmoid_mask, PSpiralComponent};
 use psnailder_fit::{PSpiralFitter, PSpiralFitterND};
 use psnailder_mock::{BackgroundComponent, GaussianComponent, MockModel, SignalComponent};
 
@@ -46,8 +46,10 @@ fn main() {
     let y_edges = linspace(-60.0, 60.0, num_y_bins + 1);
     let mock_result = model.mock_grid(&x_edges, &y_edges, 1_000_000);
 
-    let tiktak1d = psnailder_tiktak::TikTak::<6>::new(12, 128.0f32.recip(), 0.1, 0.995);
-    let tiktak2d = psnailder_tiktak::TikTak::<12>::new(12, 128.0f32.recip(), 0.1, 0.995);
+    let tiktak1d =
+        psnailder_tiktak::TikTak::<6>::new(4096u32.ilog2() as u8, 128.0f32.recip(), 0.1, 0.995);
+    let tiktak2d =
+        psnailder_tiktak::TikTak::<12>::new(4096u32.ilog2() as u8, 128.0f32.recip(), 0.1, 0.995);
     let fitter = PSpiralFitter {
         fitter_single: PSpiralFitterND {
             tiktak: tiktak1d,

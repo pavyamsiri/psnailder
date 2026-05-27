@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 argmin = { workspace = true }
 itertools = { workspace = true }
+ndarray = { workspace = true }
+rayon = { workspace = true }
 psnailder_core = { workspace = true }
 psnailder_mock = { workspace = true }
 psnailder_tiktak = { workspace = true }

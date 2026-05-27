@@ -245,9 +245,9 @@ impl PSpiralFitter {
         Ok(PSpiralFitResult {
             initial_model: PSpiralModel(res.initial_model),
             final_model: PSpiralModel(res.final_model),
-            data: PyArray1::from_vec(py, res.data).into(),
-            initial_background: PyArray1::from_vec(py, res.initial_background).into(),
-            final_background: PyArray1::from_vec(py, res.final_background).into(),
+            data: PyArray1::from_vec(py, res.data.to_vec()).into(),
+            initial_background: PyArray1::from_vec(py, res.initial_background.to_vec()).into(),
+            final_background: PyArray1::from_vec(py, res.final_background.to_vec()).into(),
             num_iterations: res.num_iterations,
             max_iterations: res.max_iterations,
             converged: res.converged,

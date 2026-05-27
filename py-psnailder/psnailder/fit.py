@@ -416,7 +416,15 @@ class PSpiralFitter:
         base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
         bounds = base_bounds * param_count
 
-        return optimize.differential_evolution(objective_func, bounds=bounds, seed=rng)
+        nfev = 0
+
+        def counted_objective(parameters: onp.Array1D[np.float64]) -> float:
+            nonlocal nfev
+            nfev += 1
+            return float(objective_func(parameters))
+
+        res = optimize.differential_evolution(counted_objective, bounds=bounds, seed=rng)
+        return res
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:

@@ -107,7 +107,7 @@ impl<const N: usize> TikTak<N> {
 impl<const N: usize> TikTak<N> {
     pub fn minimize(
         &self,
-        cost_func: impl CostFunction<Param = Vec<f64>, Output = f64> + Clone + fmt::Debug,
+        cost_func: impl CostFunction<Param = Vec<f64>, Output = f64> + Clone + fmt::Debug + Sync + Send,
         bounds: &[(f64, f64)],
     ) -> Result<OptimizationResult, Error> {
         const SIMPLEX_STEP: f64 = 0.05;
@@ -116,21 +116,31 @@ impl<const N: usize> TikTak<N> {
 
         let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
-        let mut nfev: u64 = self.num_samples as u64;
+        let mut nfev: u64 = 0;
 
-        for point in self.points.iter() {
-            let scaled_point: Vec<f64> = point
-                .iter()
-                .zip(bounds.iter())
-                .map(|(p, (lb, ub))| lb + p * (ub - lb))
-                .collect();
+        use rayon::prelude::*;
 
-            let cost = cost_func.cost(&scaled_point)?;
-            heap.push(OrderedPoint {
-                cost,
-                point: scaled_point,
-            });
-            // If we are full we evict the current worst
+        let evaluated_points: Vec<_> = self.points
+            .par_iter()
+            .map(|point| {
+                let scaled_point: Vec<f64> = point
+                    .iter()
+                    .zip(bounds.iter())
+                    .map(|(p, (lb, ub))| lb + p * (ub - lb))
+                    .collect();
+
+                let cost = cost_func.cost(&scaled_point)?;
+                Ok::<_, Error>(OrderedPoint {
+                    cost,
+                    point: scaled_point,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        nfev += evaluated_points.len() as u64;
+
+        for ep in evaluated_points {
+            heap.push(ep);
             if heap.len() > self.num_star {
                 heap.pop();
             }
@@ -147,6 +157,7 @@ impl<const N: usize> TikTak<N> {
             let weight = (((idx + 1) as f64) / (self.num_star as f64))
                 .powf(0.5)
                 .clamp(self.min_weight, self.max_weight);
+
             let new_seed = if let Some(global_best_param) = &global_best_param {
                 current_seed
                     .point

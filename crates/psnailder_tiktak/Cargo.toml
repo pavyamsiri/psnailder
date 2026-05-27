@@ -9,5 +9,6 @@ argmin-math = { workspace = true }
 argmin-observer-slog = { workspace = true }
 argmin_testfunctions = { workspace = true }
 ndarray = { workspace = true }
+rayon = { workspace = true }
 sobol = { workspace = true }
 sobol_burley = { workspace = true }

@@ -2,7 +2,7 @@ pub fn create_sigmoid_mask(x_scale: f64, y_scale: f64) -> impl Fn(f64, f64) -> f
     move |x: f64, y: f64| {
         let xs = x / x_scale;
         let ys = y / y_scale;
-        -expit(xs * xs + ys * ys - 1.0) + 1.0
+        expit(- (xs * xs + ys * ys - 1.0))
     }
 }
 
@@ -77,8 +77,7 @@ impl PSpiralComponent {
         let abs_b = self.b.abs();
         if abs_c > 1e-10 {
             let half_b_over_c = 0.5 * abs_b / abs_c;
-            let term = half_b_over_c * half_b_over_c + r / abs_c;
-            -half_b_over_c + term.sqrt()
+            -half_b_over_c + (half_b_over_c * half_b_over_c + r / abs_c).sqrt()
         } else {
             r / abs_b
         }
@@ -87,11 +86,9 @@ impl PSpiralComponent {
     #[inline]
     pub fn perturbation_scalar(&self, z: f64, vz: f64) -> f64 {
         let scale_factor = self.scale_factor;
-        let scaled_z = z * scale_factor;
-        let scaled_vz = vz / scale_factor;
-
-        let r = (z * z + scaled_vz * scaled_vz).sqrt();
-        let theta = vz.atan2(scaled_z);
+        
+        let r = z.hypot(vz / scale_factor);
+        let theta = vz.atan2(z * scale_factor);
 
         let phase = self.spiral_phase(r);
         let flattening = expit((r - self.rho) / self.flattening_strength);
