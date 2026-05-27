@@ -2,4 +2,6 @@
 members = ["py-psnailder"]
 
 [dependency-groups]
-dev = []
+dev = [
+    "matplotlib>=3.10.9",
+]

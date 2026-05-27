@@ -291,6 +291,9 @@ class PSpiralFitter:
             k2 = 12
             a1 = 2 * k1 - 2.0 * q1
             a2 = 2 * k2 - 2.0 * q2
+            num_particles = np.sum(initial_density)
+            a1 = 6 * np.log(num_particles) - 2.0 * q1
+            a2 = 12 * np.log(num_particles) - 2.0 * q2
             if a2 < a1:
                 num_components = 2
                 current_warm_start = res2.final_model.to_array()

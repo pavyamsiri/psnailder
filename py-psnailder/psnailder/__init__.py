@@ -23,8 +23,8 @@ type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], on
 
 def _main() -> None:
     import time
-    from typing import Literal
 
+    from matplotlib import pyplot as plt
     import numpy as np
     from phasmix.component import AlinderComponent, GaussianComponent
     from phasmix.mock import MockModel
@@ -37,10 +37,10 @@ def _main() -> None:
         alpha=0.5,
         b=0.05,
         c=0.002,
-        theta0=-np.pi / 2,
+        theta0=0.0,
         scale_factor=40.00,
         rho=0.09,
-        winding=-1,
+        winding=1,
     )
     signal2 = AlinderComponent(
         alpha=0.5,
@@ -54,10 +54,7 @@ def _main() -> None:
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
     mock_model = MockModel(
-        (
-            signal1,
-            signal2,
-        ),
+        (signal1,),
         (background_comp,),
     )
 
@@ -75,10 +72,10 @@ def _main() -> None:
     particles = mock_model.mock_particles(num_particles, x_edges, y_edges)
     z_samples = particles.x
     vz_samples = particles.y
-    
+
     density, _, _ = np.histogram2d(z_samples, vz_samples, bins=(x_edges, y_edges))
     density = density.T
-    
+
     print("Generating initial background estimate via KDE...")
     initial_background = generate_initial_background(z_samples, vz_samples, x_mesh, y_mesh)
     # Normalize initial background
@@ -114,6 +111,31 @@ def _main() -> None:
     print(f"Rust iterations: {res_rust.num_iterations}")
     print(f"Rust converged: {res_rust.converged}")
     print(f"Rust final model: {res_rust.final_model}")
+
+    rs_background = res_rust.final_background.reshape(x_mesh.shape)
+    rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background
+
+    fig = plt.figure()
+    # [true density, python density, rust density]
+    # [true background, python background, rust background]
+    true_density_axes = fig.add_subplot(231)
+    py_density_axes = fig.add_subplot(232)
+    rs_density_axes = fig.add_subplot(233)
+    true_background_axes = fig.add_subplot(234)
+    py_background_axes = fig.add_subplot(235)
+    rs_background_axes = fig.add_subplot(236)
+
+    true_density_axes.pcolormesh(x_mesh, y_mesh, density)
+    py_density_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.prediction())
+    rs_density_axes.pcolormesh(x_mesh, y_mesh, rs_density)
+
+    true_background_axes.pcolormesh(x_mesh, y_mesh, initial_background)
+    py_background_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.background)
+    rs_background_axes.pcolormesh(x_mesh, y_mesh, rs_background)
+
+    fig.tight_layout()
+    fig.savefig("./out.png")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

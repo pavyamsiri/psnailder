@@ -405,8 +405,9 @@ impl PSpiralFitter {
                 mesh_y,
             );
 
-            let aic_single = 2.0 * 6.0 - 2.0 * ll_single;
-            let aic_double = 2.0 * 12.0 - 2.0 * ll_double;
+            let norm = initial_density.iter().sum::<f64>() - 1.0;
+            let aic_single = norm.ln_1p() * 6.0 - 2.0 * ll_single;
+            let aic_double = norm.ln_1p() * 12.0 - 2.0 * ll_double;
 
             if aic_double < aic_single { 2 } else { 1 }
         };
