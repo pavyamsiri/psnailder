@@ -49,7 +49,7 @@ fn main() {
     let tiktak1d = psnailder_tiktak::TikTak::<6>::new(12, 128.0f32.recip(), 0.1, 0.995);
     let tiktak2d = psnailder_tiktak::TikTak::<12>::new(12, 128.0f32.recip(), 0.1, 0.995);
     let fitter = PSpiralFitter {
-        fitter1d: PSpiralFitterND {
+        fitter_single: PSpiralFitterND {
             tiktak: tiktak1d,
             alpha_bounds: (0.0, 1.0),
             b_bounds: (0.005, 0.1),
@@ -58,7 +58,7 @@ fn main() {
             scale_factor_bounds: (30.0, 70.0),
             rho_bounds: (0.0, 0.18),
         },
-        fitter2d: PSpiralFitterND {
+        fitter_double: PSpiralFitterND {
             tiktak: tiktak2d,
             alpha_bounds: (0.0, 1.0),
             b_bounds: (0.005, 0.1),
@@ -67,6 +67,8 @@ fn main() {
             scale_factor_bounds: (30.0, 70.0),
             rho_bounds: (0.0, 0.18),
         },
+        max_iterations: Some(50),
+        smoothing_sigma: 2.0,
     };
 
     let mask_func = create_sigmoid_mask(1.0, 40.0);
@@ -83,7 +85,15 @@ fn main() {
     let mesh_y = mock_result.mesh_y;
 
     let start_time = std::time::Instant::now();
-    fitter.fit_spiral_with_background(&density, &background, &mask, &mesh_x, &mesh_y);
+    let res = fitter.fit_spiral_with_background(
+        &density,
+        &background,
+        &mask,
+        &mesh_x,
+        &mesh_y,
+        (num_y_bins, num_x_bins),
+    );
     let elapsed = start_time.elapsed();
+    println!("# of iterations = {:?}", res.num_iterations);
     println!("Took {} seconds", elapsed.as_secs());
 }
