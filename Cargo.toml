@@ -22,6 +22,7 @@ sobol = "1.0.2"
 sobol_burley = "0.5.0"
 
 psnailder_core = { path = "crates/psnailder_core" }
+psnailder_fit = { path = "crates/psnailder_fit" }
 psnailder_mock = { path = "crates/psnailder_mock" }
 psnailder_tiktak = { path = "crates/psnailder_tiktak" }
 

@@ -1,4 +1,4 @@
-"""A module that implements the phase spiral fitting algorithm described in Alinder et al. 2023."""
+"""A module that implements the phase spiral fitting algorithm described in Alinder et4 al. 2023."""
 
 from __future__ import annotations
 
@@ -23,27 +23,15 @@ type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], on
 
 def _main() -> None:
     import time
-    from collections.abc import Callable
-    from typing import Any, Literal
-    from optype import numpy as onp
+    from typing import Literal
 
     import numpy as np
     from phasmix.component import AlinderComponent, GaussianComponent
     from phasmix.mock import MockModel
 
-    from psnailder._internal import ln_likelihood_f64 as ln_likelihood_rust_f64
-    from psnailder._internal import PSpiralComponent as PSpiralComponentRust
-    from psnailder._internal import PSpiralModel as PSpiralModelRust
-    from psnailder._internal import optimize_parameters
-    from psnailder._likelihood_utils import ln_likelihood
-
-    def _run_benchmark(name: str, func: Callable[[], Any], *, num_trials: int = 100_000) -> None:  # pyright: ignore[reportExplicitAny]
-        start_time = time.perf_counter()
-        for _ in range(num_trials):
-            _ = func()  # pyright: ignore[reportAny]
-        elapsed = time.perf_counter() - start_time
-
-        print(f"Took {elapsed:.2f}s to evaluate {num_trials} {name}: ~{(1000**2 * elapsed / num_trials):.2f} microseconds")
+    from psnailder._internal import PSpiralFitter as PSpiralFitterRust
+    from psnailder.fit import PSpiralFitter as PSpiralFitterPython
+    from psnailder._background_utils import generate_initial_background
 
     signal1 = AlinderComponent(
         alpha=0.5,
@@ -63,46 +51,69 @@ def _main() -> None:
         rho=0.09,
         winding=-1,
     )
-    background = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
+    background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
     mock_model = MockModel(
         (
             signal1,
             signal2,
         ),
-        (background,),
+        (background_comp,),
     )
 
-    dx: float = 0.05
-    dy: float = 1
-    x_bins = np.arange(-1.2, 1.2 + dx, dx)
-    y_bins = np.arange(-60.0, 60.0 + dy, dy)
     num_x_bins = 100
     num_y_bins = 100
     x_edges = np.linspace(-1.2, 1.2, num_x_bins + 1)
     y_edges = np.linspace(-60.0, 60.0, num_y_bins + 1)
 
-    x_bins = x_edges
-    y_bins = y_edges
-
-    x_centres = 0.5 * (x_bins[:-1] + x_bins[1:])
-    y_centres = 0.5 * (y_bins[:-1] + y_bins[1:])
-
+    x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 1_000_000
-    mock_data = mock_model.mock_grid(x_bins, y_bins)
-    density = num_particles * mock_data.density
-    background = num_particles * mock_data.background
+    num_particles: int = 100_000
+    print(f"Sampling {num_particles} particles...")
+    particles = mock_model.mock_particles(num_particles, x_edges, y_edges)
+    z_samples = particles.x
+    vz_samples = particles.y
+    
+    density, _, _ = np.histogram2d(z_samples, vz_samples, bins=(x_edges, y_edges))
+    density = density.T
+    
+    print("Generating initial background estimate via KDE...")
+    initial_background = generate_initial_background(z_samples, vz_samples, x_mesh, y_mesh)
+    # Normalize initial background
+    initial_background = initial_background / np.sum(initial_background) * np.sum(density)
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
-    fitter = fit.PSpiralFitter(mask_func=fit.create_sigmoid_mask(1.0, 40.0))
 
+    print("\n--- Python Version ---")
+    fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
     start_time = time.perf_counter()
-    res = fitter.fit_spiral_with_background(density, background, x_mesh, y_mesh, improve_background=False)
-    elapsed = time.perf_counter() - start_time
-    print(res)
-    print(f"Took {elapsed:.3f} seconds")
+    res_py = fitter_py.fit_spiral_with_background(
+        density, initial_background, x_mesh, y_mesh, num_components=2, improve_background=True
+    )
+    elapsed_py = time.perf_counter() - start_time
+    print(f"Python took {elapsed_py:.3f} seconds")
+    print(f"Python iterations: {res_py.num_iterations}")
+    print(f"Python converged: {res_py.converged}")
+    print(f"Python final model: {res_py.final_model}")
+
+    print("\n--- Rust Version ---")
+    fitter_rust = PSpiralFitterRust(num_samples=4096, max_iterations=10)
+    start_time = time.perf_counter()
+    res_rust = fitter_rust.fit_spiral_with_background(
+        density.flatten(),
+        initial_background.flatten(),
+        mask.flatten(),
+        x_mesh.flatten(),
+        y_mesh.flatten(),
+        (num_y_bins, num_x_bins),
+    )
+    elapsed_rust = time.perf_counter() - start_time
+    print(f"Rust took {elapsed_rust:.3f} seconds")
+    print(f"Rust iterations: {res_rust.num_iterations}")
+    print(f"Rust converged: {res_rust.converged}")
+    print(f"Rust final model: {res_rust.final_model}")
 
 
 if __name__ == "__main__":

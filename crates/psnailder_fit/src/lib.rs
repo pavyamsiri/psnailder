@@ -1,5 +1,5 @@
 use argmin::core::CostFunction;
-use psnailder_core::{ln_likelihood_f64, PSpiralComponent, PSpiralModel};
+use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_f64};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
@@ -212,11 +212,11 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             return None;
         }
 
-        if let Some(max_iter) = self.max_iterations {
-            if self.iteration_index >= max_iter {
-                self.is_finished = true;
-                return None;
-            }
+        if let Some(max_iter) = self.max_iterations
+            && self.iteration_index >= max_iter
+        {
+            self.is_finished = true;
+            return None;
         }
 
         self.iteration_index += 1;
@@ -225,14 +225,16 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         let (current_model, ll) = match self.num_components {
             1 => {
                 let (comp, ll) = if let Some(w) = self.best_winding {
-                    self.fitter.fitter_single.fit_spiral_with_background_with_winding(
-                        &self.initial_density,
-                        &self.current_background,
-                        &self.mask,
-                        &self.mesh_x,
-                        &self.mesh_y,
-                        w,
-                    )
+                    self.fitter
+                        .fitter_single
+                        .fit_spiral_with_background_with_winding(
+                            &self.initial_density,
+                            &self.current_background,
+                            &self.mask,
+                            &self.mesh_x,
+                            &self.mesh_y,
+                            w,
+                        )
                 } else {
                     let (comp, ll) = self.fitter.fitter_single.fit_spiral_with_background(
                         &self.initial_density,
@@ -253,14 +255,16 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             }
             2 => {
                 let (comp1, comp2, ll) = if let Some(w) = self.best_winding {
-                    self.fitter.fitter_double.fit_spiral_with_background_with_winding(
-                        &self.initial_density,
-                        &self.current_background,
-                        &self.mask,
-                        &self.mesh_x,
-                        &self.mesh_y,
-                        w,
-                    )
+                    self.fitter
+                        .fitter_double
+                        .fit_spiral_with_background_with_winding(
+                            &self.initial_density,
+                            &self.current_background,
+                            &self.mask,
+                            &self.mesh_x,
+                            &self.mesh_y,
+                            w,
+                        )
                 } else {
                     let (c1, c2, ll) = self.fitter.fitter_double.fit_spiral_with_background(
                         &self.initial_density,
@@ -404,11 +408,7 @@ impl PSpiralFitter {
             let aic_single = 2.0 * 6.0 - 2.0 * ll_single;
             let aic_double = 2.0 * 12.0 - 2.0 * ll_double;
 
-            if aic_double < aic_single {
-                2
-            } else {
-                1
-            }
+            if aic_double < aic_single { 2 } else { 1 }
         };
 
         PSpiralFitterIterative {

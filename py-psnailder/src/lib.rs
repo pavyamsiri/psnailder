@@ -1,90 +1,11 @@
-use argmin::core::CostFunction;
 use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
+use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND, PSpiralFitResult as RustFitResult};
+use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
 
 #[pyclass]
-pub struct PSpiralModel(psnailder_core::PSpiralModel);
-
-#[pymethods]
-impl PSpiralModel {
-    #[new]
-    fn new(components: Vec<PyRef<PSpiralComponent>>) -> Self {
-        Self(psnailder_core::PSpiralModel {
-            components: components.iter().map(|v| v.0.clone()).collect(),
-        })
-    }
-
-    pub fn perturbation<'py>(
-        &self,
-        py: Python<'py>,
-        z: PyReadonlyArray1<'py, f64>,
-        vz: PyReadonlyArray1<'py, f64>,
-    ) -> PyResult<Py<PyArray1<f64>>> {
-        let z = z.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("z must be contiguous 1D array")
-        })?;
-
-        let vz = vz.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("vz must be contiguous 1D array")
-        })?;
-
-        if z.len() != vz.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "z and vz must have same length",
-            ));
-        }
-
-        let mut out = vec![0.0; z.len()];
-
-        self.0.perturbation_vec(z, vz, &mut out);
-
-        Ok(PyArray1::from_vec(py, out).into())
-    }
-
-    pub fn evaluate_likelihood<'py>(
-        &self,
-        data: PyReadonlyArray1<'py, f64>,
-        background: PyReadonlyArray1<'py, f64>,
-        mask: PyReadonlyArray1<'py, f64>,
-        z: PyReadonlyArray1<'py, f64>,
-        vz: PyReadonlyArray1<'py, f64>,
-    ) -> PyResult<f64> {
-        let z = z.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("z must be contiguous 1D array")
-        })?;
-
-        let vz = vz.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("vz must be contiguous 1D array")
-        })?;
-
-        if z.len() != vz.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "z and vz must have same length",
-            ));
-        }
-
-        let data = data.as_slice()?;
-        let mask = mask.as_slice()?;
-        let background = background.as_slice()?;
-        let mut out = vec![0.0; data.len()];
-        for (zz, vzz, oo, current_background) in itertools::izip!(z, vz, &mut out, background) {
-            let mut value = f64::NEG_INFINITY;
-
-            for comp in self.0.components.iter() {
-                let pert_value = comp.perturbation_scalar(*zz, *vzz);
-                value = value.max(pert_value);
-            }
-
-            *oo = current_background * value;
-        }
-
-        Ok(psnailder_core::ln_likelihood_f64(data, &out, mask))
-    }
-}
-
-#[pyclass]
-#[derive(Debug)]
-pub struct PSpiralComponent(psnailder_core::PSpiralComponent);
+#[derive(Clone, Debug)]
+pub struct PSpiralComponent(pub RustComponent);
 
 #[pymethods]
 impl PSpiralComponent {
@@ -99,7 +20,7 @@ impl PSpiralComponent {
         winding: i8,
         flattening_strength: Option<f64>,
     ) -> Self {
-        Self(psnailder_core::PSpiralComponent {
+        Self(RustComponent {
             alpha,
             b,
             c,
@@ -111,65 +32,201 @@ impl PSpiralComponent {
         })
     }
 
+    #[getter]
+    fn alpha(&self) -> f64 { self.0.alpha }
+    #[getter]
+    fn b(&self) -> f64 { self.0.b }
+    #[getter]
+    fn c(&self) -> f64 { self.0.c }
+    #[getter]
+    fn theta0(&self) -> f64 { self.0.theta0 }
+    #[getter]
+    fn scale_factor(&self) -> f64 { self.0.scale_factor }
+    #[getter]
+    fn rho(&self) -> f64 { self.0.rho }
+    #[getter]
+    fn winding(&self) -> i8 { self.0.winding }
+
     pub fn perturbation<'py>(
         &self,
         py: Python<'py>,
         z: PyReadonlyArray1<'py, f64>,
         vz: PyReadonlyArray1<'py, f64>,
-    ) -> PyResult<Py<PyArray1<f64>>> {
-        let z = z.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("z must be contiguous 1D array")
-        })?;
-
-        let vz = vz.as_slice().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("vz must be contiguous 1D array")
-        })?;
-
-        if z.len() != vz.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "z and vz must have same length",
-            ));
-        }
-
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let z = z.as_slice()?;
+        let vz = vz.as_slice()?;
         let mut out = vec![0.0; z.len()];
-
         self.0.perturbation_vec(z, vz, &mut out);
+        Ok(PyArray1::from_vec(py, out))
+    }
 
-        Ok(PyArray1::from_vec(py, out).into())
+    fn __repr__(&self) -> String {
+        format!(
+            "PSpiralComponent(alpha={:.4}, b={:.4}, c={:.4}, theta0={:.4}, scale_factor={:.4}, rho={:.4}, winding={})",
+            self.0.alpha, self.0.b, self.0.c, self.0.theta0, self.0.scale_factor, self.0.rho, self.0.winding
+        )
     }
 }
 
-#[pyfunction]
-fn fit_spiral_rust<'py>(
-    data: PyReadonlyArray1<'py, f64>,
-    background: PyReadonlyArray1<'py, f64>,
-    mask: PyReadonlyArray1<'py, f64>,
-    z: PyReadonlyArray1<'py, f64>,
-    vz: PyReadonlyArray1<'py, f64>,
-    bounds: Vec<(f64, f64)>,
-) -> PyResult<(Vec<f64>, f64, u64)> {
-    let tiktak = psnailder_tiktak::TikTak::<6>::new(10, 128.0f32.recip(), 0.1, 0.995);
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PSpiralModel(pub RustModel);
 
-    let data = data.as_slice()?;
-    let background = background.as_slice()?;
-    let mask = mask.as_slice()?;
-    let z = z.as_slice()?;
-    let vz = vz.as_slice()?;
+#[pymethods]
+impl PSpiralModel {
+    #[new]
+    fn new(components: Vec<PSpiralComponent>) -> Self {
+        Self(RustModel {
+            components: components.into_iter().map(|c| c.0).collect(),
+        })
+    }
 
-    let res = tiktak
-        .minimize(
-            PSpiralModel1DProblem {
-                data,
-                background,
-                mask,
-                z,
-                vz,
-            },
-            &bounds,
+    #[getter]
+    fn components(&self) -> Vec<PSpiralComponent> {
+        self.0.components.iter().map(|c| PSpiralComponent(c.clone())).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        let comps: Vec<String> = self.components().iter().map(|c| c.__repr__()).collect();
+        format!("PSpiralModel(components=[{}])", comps.join(", "))
+    }
+
+    pub fn perturbation<'py>(
+        &self,
+        py: Python<'py>,
+        z: PyReadonlyArray1<'py, f64>,
+        vz: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let z = z.as_slice()?;
+        let vz = vz.as_slice()?;
+        let mut out = vec![0.0; z.len()];
+        self.0.perturbation_vec(z, vz, &mut out);
+        Ok(PyArray1::from_vec(py, out))
+    }
+}
+
+#[pyclass]
+pub struct PSpiralFitResult {
+    #[pyo3(get)]
+    pub initial_model: PSpiralModel,
+    #[pyo3(get)]
+    pub final_model: PSpiralModel,
+    #[pyo3(get)]
+    pub data: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    pub initial_background: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    pub final_background: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    pub num_iterations: usize,
+    #[pyo3(get)]
+    pub max_iterations: Option<usize>,
+    #[pyo3(get)]
+    pub converged: bool,
+}
+
+#[pymethods]
+impl PSpiralFitResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "PSpiralFitResult(num_iterations={}, converged={})",
+            self.num_iterations, self.converged
         )
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?;
+    }
+}
 
-    Ok((res.params, res.cost, res.nfev))
+#[pyclass]
+pub struct PSpiralFitter {
+    inner: RustFitter,
+}
+
+#[pymethods]
+impl PSpiralFitter {
+    #[new]
+    #[pyo3(signature = (num_samples=4096, max_iterations=Some(50), smoothing_sigma=2.0))]
+    fn new(num_samples: usize, max_iterations: Option<usize>, smoothing_sigma: f64) -> Self {
+        let tiktak1 = psnailder_tiktak::TikTak::<6>::new(
+            (num_samples as f64).log2() as u8,
+            128.0f32.recip(),
+            0.1,
+            0.995,
+        );
+        let tiktak2 = psnailder_tiktak::TikTak::<12>::new(
+            (num_samples as f64).log2() as u8,
+            128.0f32.recip(),
+            0.1,
+            0.995,
+        );
+
+        let alpha_bounds = (0.0, 1.0);
+        let b_bounds = (0.005, 0.1);
+        let c_bounds = (0.0, 0.004);
+        let theta0_bounds = (-std::f64::consts::PI, std::f64::consts::PI);
+        let scale_factor_bounds = (30.0, 70.0);
+        let rho_bounds = (0.0, 0.18);
+
+        Self {
+            inner: RustFitter {
+                fitter_single: PSpiralFitterND {
+                    tiktak: tiktak1,
+                    alpha_bounds,
+                    b_bounds,
+                    c_bounds,
+                    theta0_bounds,
+                    scale_factor_bounds,
+                    rho_bounds,
+                },
+                fitter_double: PSpiralFitterND {
+                    tiktak: tiktak2,
+                    alpha_bounds,
+                    b_bounds,
+                    c_bounds,
+                    theta0_bounds,
+                    scale_factor_bounds,
+                    rho_bounds,
+                },
+                max_iterations,
+                smoothing_sigma,
+            },
+        }
+    }
+
+    pub fn fit_spiral_with_background<'py>(
+        &self,
+        py: Python<'py>,
+        initial_density: PyReadonlyArray1<'py, f64>,
+        initial_background: PyReadonlyArray1<'py, f64>,
+        mask: PyReadonlyArray1<'py, f64>,
+        mesh_x: PyReadonlyArray1<'py, f64>,
+        mesh_y: PyReadonlyArray1<'py, f64>,
+        shape: (usize, usize),
+    ) -> PyResult<PSpiralFitResult> {
+        let initial_density = initial_density.as_slice()?;
+        let initial_background = initial_background.as_slice()?;
+        let mask = mask.as_slice()?;
+        let mesh_x = mesh_x.as_slice()?;
+        let mesh_y = mesh_y.as_slice()?;
+
+        let res = self.inner.fit_spiral_with_background(
+            initial_density,
+            initial_background,
+            mask,
+            mesh_x,
+            mesh_y,
+            shape,
+        );
+
+        Ok(PSpiralFitResult {
+            initial_model: PSpiralModel(res.initial_model),
+            final_model: PSpiralModel(res.final_model),
+            data: PyArray1::from_vec(py, res.data).into(),
+            initial_background: PyArray1::from_vec(py, res.initial_background).into(),
+            final_background: PyArray1::from_vec(py, res.final_background).into(),
+            num_iterations: res.num_iterations,
+            max_iterations: res.max_iterations,
+            converged: res.converged,
+        })
+    }
 }
 
 #[pyfunction]
@@ -185,105 +242,12 @@ fn ln_likelihood_f64(
     Ok(psnailder_core::ln_likelihood_f64(data, prediction, mask))
 }
 
-#[derive(Debug, Clone)]
-struct PSpiralModel1DProblem<'py> {
-    data: &'py [f64],
-    background: &'py [f64],
-    mask: &'py [f64],
-    z: &'py [f64],
-    vz: &'py [f64],
-}
-
-impl<'py> CostFunction for PSpiralModel1DProblem<'py> {
-    type Param = Vec<f64>;
-
-    type Output = f64;
-
-    fn cost(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
-        let comp = psnailder_core::PSpiralComponent {
-            alpha: param[0],
-            b: param[1],
-            c: param[2],
-            theta0: param[3],
-            scale_factor: param[4],
-            rho: param[5],
-            winding: 1,
-            flattening_strength: 0.1,
-        };
-
-        let mut out = vec![0.0; self.data.len()];
-        comp.perturbation_vec(self.z, self.vz, &mut out);
-        let prediction: Vec<f64> = out
-            .into_iter()
-            .zip(self.background.iter())
-            .map(|(p, b)| p * b)
-            .collect();
-
-        Ok(-psnailder_core::ln_likelihood_f64(
-            self.data,
-            &prediction,
-            self.mask,
-        ))
-    }
-}
-
-#[pyfunction]
-fn optimize_parameters<'py>(
-    data: PyReadonlyArray1<'py, f64>,
-    background: PyReadonlyArray1<'py, f64>,
-    mask: PyReadonlyArray1<'py, f64>,
-    z: PyReadonlyArray1<'py, f64>,
-    vz: PyReadonlyArray1<'py, f64>,
-) -> PyResult<PSpiralComponent> {
-    let tiktak = psnailder_tiktak::TikTak::<6>::new(12, 128.0f32.recip(), 0.1, 0.995);
-
-    let data = data.as_slice()?;
-    let background = background.as_slice()?;
-    let mask = mask.as_slice()?;
-    let z = z.as_slice()?;
-    let vz = vz.as_slice()?;
-
-    let res = tiktak
-        .minimize(
-            PSpiralModel1DProblem {
-                data,
-                background,
-                mask,
-                z,
-                vz,
-            },
-            &[
-                (0.0, 1.0),
-                (0.005f64, 0.1f64),
-                (0.0, 0.004),
-                (-core::f64::consts::PI, core::f64::consts::PI),
-                (30.00f64, 70.0f64),
-                (0.0, 0.18),
-            ],
-        )
-        .expect("no errors!");
-
-    let best_model = PSpiralComponent(psnailder_core::PSpiralComponent {
-        alpha: res.params[0],
-        b: res.params[1],
-        c: res.params[2],
-        theta0: res.params[3],
-        scale_factor: res.params[4],
-        rho: res.params[5],
-        winding: 1,
-        flattening_strength: 0.1,
-    });
-
-    println!("best - {best_model:?}");
-    Ok(best_model)
-}
-
 #[pymodule]
 fn _internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ln_likelihood_f64, m)?)?;
-    m.add_function(wrap_pyfunction!(fit_spiral_rust, m)?)?;
-    m.add_function(wrap_pyfunction!(optimize_parameters, m)?)?;
     m.add_class::<PSpiralComponent>()?;
     m.add_class::<PSpiralModel>()?;
+    m.add_class::<PSpiralFitter>()?;
+    m.add_class::<PSpiralFitResult>()?;
     Ok(())
 }

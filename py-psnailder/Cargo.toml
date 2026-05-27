@@ -12,6 +12,7 @@ argmin = { workspace = true }
 itertools = { workspace = true }
 pyo3 = { workspace = true }
 psnailder_core = { workspace = true }
+psnailder_fit = { workspace = true }
 psnailder_tiktak = { workspace = true }
 numpy = { workspace = true }
 
