@@ -45,38 +45,64 @@ def _main() -> None:
 
         print(f"Took {elapsed:.2f}s to evaluate {num_trials} {name}: ~{(1000**2 * elapsed / num_trials):.2f} microseconds")
 
-    true_signal = AlinderComponent(
+    signal1 = AlinderComponent(
         alpha=0.5,
         b=0.05,
         c=0.002,
-        theta0=0.0,
+        theta0=-np.pi / 2,
         scale_factor=40.00,
         rho=0.09,
-        winding=1,
+        winding=-1,
+    )
+    signal2 = AlinderComponent(
+        alpha=0.5,
+        b=0.05,
+        c=0.002,
+        theta0=np.pi / 2,
+        scale_factor=40.00,
+        rho=0.09,
+        winding=-1,
     )
     background = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
-    mock_model = MockModel((true_signal,), (background,))
+    mock_model = MockModel(
+        (
+            signal1,
+            signal2,
+        ),
+        (background,),
+    )
 
     dx: float = 0.05
     dy: float = 1
     x_bins = np.arange(-1.2, 1.2 + dx, dx)
     y_bins = np.arange(-60.0, 60.0 + dy, dy)
+    num_x_bins = 100
+    num_y_bins = 100
+    x_edges = np.linspace(-1.2, 1.2, num_x_bins + 1)
+    y_edges = np.linspace(-60.0, 60.0, num_y_bins + 1)
+
+    x_bins = x_edges
+    y_bins = y_edges
 
     x_centres = 0.5 * (x_bins[:-1] + x_bins[1:])
     y_centres = 0.5 * (y_bins[:-1] + y_bins[1:])
 
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 500_000
+    num_particles: int = 1_000_000
     mock_data = mock_model.mock_grid(x_bins, y_bins)
     density = num_particles * mock_data.density
     background = num_particles * mock_data.background
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
+    fitter = fit.PSpiralFitter(mask_func=fit.create_sigmoid_mask(1.0, 40.0))
 
-    cost = optimize_parameters(density.flatten(), background.flatten(), mask.flatten(), x_mesh.flatten(), y_mesh.flatten())
-    print(cost)
+    start_time = time.perf_counter()
+    res = fitter.fit_spiral_with_background(density, background, x_mesh, y_mesh, improve_background=False)
+    elapsed = time.perf_counter() - start_time
+    print(res)
+    print(f"Took {elapsed:.3f} seconds")
 
 
 if __name__ == "__main__":

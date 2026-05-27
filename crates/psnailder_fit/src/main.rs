@@ -81,5 +81,8 @@ fn main() {
     let mesh_x = mock_result.mesh_x;
     let mesh_y = mock_result.mesh_y;
 
+    let start_time = std::time::Instant::now();
     fitter.fit_spiral_with_background(&density, &background, &mask, &mesh_x, &mesh_y);
+    let elapsed = start_time.elapsed();
+    println!("Took {} seconds", elapsed.as_secs());
 }
