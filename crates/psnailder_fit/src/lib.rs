@@ -130,6 +130,7 @@ pub struct PSpiralFitResult {
     pub num_iterations: usize,
     pub max_iterations: Option<usize>,
     pub converged: bool,
+    pub lnl: f64,
 }
 
 pub struct PSpiralFitterIterative<'a> {
@@ -307,6 +308,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
+                lnl: self.best_quality,
             });
         }
 
@@ -353,6 +355,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
+                lnl: self.best_quality,
             });
         }
 
@@ -369,6 +372,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             num_iterations: self.iteration_index,
             max_iterations: self.max_iterations,
             converged: self.converged,
+            lnl: self.best_quality,
         })
     }
 }
@@ -405,11 +409,13 @@ impl PSpiralFitter {
                 mesh_y,
             );
 
-            let norm = initial_density.iter().sum::<f64>() - 1.0;
-            let aic_single = norm.ln_1p() * 6.0 - 2.0 * ll_single;
-            let aic_double = norm.ln_1p() * 12.0 - 2.0 * ll_double;
+            let ln_norm = initial_density.iter().sum::<f64>().ln();
+            // let aic_single = 2.0 * 6.0 - 2.0 * ll_single;
+            // let aic_double = 2.0 * 12.0 - 2.0 * ll_double;
+            let bic_single = ln_norm * 6.0 - 2.0 * ll_single;
+            let bic_double = ln_norm * 12.0 - 2.0 * ll_double;
 
-            if aic_double < aic_single { 2 } else { 1 }
+            if bic_double < bic_single { 2 } else { 1 }
         };
 
         PSpiralFitterIterative {

@@ -1,7 +1,7 @@
 use numpy::{PyArray1, PyReadonlyArray1};
-use pyo3::prelude::*;
-use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND, PSpiralFitResult as RustFitResult};
 use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
+use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
+use pyo3::prelude::*;
 
 #[pyclass]
 #[derive(Clone, Debug)]
@@ -33,19 +33,33 @@ impl PSpiralComponent {
     }
 
     #[getter]
-    fn alpha(&self) -> f64 { self.0.alpha }
+    fn alpha(&self) -> f64 {
+        self.0.alpha
+    }
     #[getter]
-    fn b(&self) -> f64 { self.0.b }
+    fn b(&self) -> f64 {
+        self.0.b
+    }
     #[getter]
-    fn c(&self) -> f64 { self.0.c }
+    fn c(&self) -> f64 {
+        self.0.c
+    }
     #[getter]
-    fn theta0(&self) -> f64 { self.0.theta0 }
+    fn theta0(&self) -> f64 {
+        self.0.theta0
+    }
     #[getter]
-    fn scale_factor(&self) -> f64 { self.0.scale_factor }
+    fn scale_factor(&self) -> f64 {
+        self.0.scale_factor
+    }
     #[getter]
-    fn rho(&self) -> f64 { self.0.rho }
+    fn rho(&self) -> f64 {
+        self.0.rho
+    }
     #[getter]
-    fn winding(&self) -> i8 { self.0.winding }
+    fn winding(&self) -> i8 {
+        self.0.winding
+    }
 
     pub fn perturbation<'py>(
         &self,
@@ -63,7 +77,13 @@ impl PSpiralComponent {
     fn __repr__(&self) -> String {
         format!(
             "PSpiralComponent(alpha={:.4}, b={:.4}, c={:.4}, theta0={:.4}, scale_factor={:.4}, rho={:.4}, winding={})",
-            self.0.alpha, self.0.b, self.0.c, self.0.theta0, self.0.scale_factor, self.0.rho, self.0.winding
+            self.0.alpha,
+            self.0.b,
+            self.0.c,
+            self.0.theta0,
+            self.0.scale_factor,
+            self.0.rho,
+            self.0.winding
         )
     }
 }
@@ -83,7 +103,11 @@ impl PSpiralModel {
 
     #[getter]
     fn components(&self) -> Vec<PSpiralComponent> {
-        self.0.components.iter().map(|c| PSpiralComponent(c.clone())).collect()
+        self.0
+            .components
+            .iter()
+            .map(|c| PSpiralComponent(c.clone()))
+            .collect()
     }
 
     fn __repr__(&self) -> String {
@@ -123,6 +147,8 @@ pub struct PSpiralFitResult {
     pub max_iterations: Option<usize>,
     #[pyo3(get)]
     pub converged: bool,
+    #[pyo3(get)]
+    pub lnl: f64,
 }
 
 #[pymethods]
@@ -225,6 +251,7 @@ impl PSpiralFitter {
             num_iterations: res.num_iterations,
             max_iterations: res.max_iterations,
             converged: res.converged,
+            lnl: res.lnl,
         })
     }
 }

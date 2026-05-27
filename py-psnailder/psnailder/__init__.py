@@ -37,7 +37,7 @@ def _main() -> None:
         alpha=0.5,
         b=0.05,
         c=0.002,
-        theta0=0.0,
+        theta0=-np.pi / 2,
         scale_factor=40.00,
         rho=0.09,
         winding=1,
@@ -49,7 +49,7 @@ def _main() -> None:
         theta0=np.pi / 2,
         scale_factor=40.00,
         rho=0.09,
-        winding=-1,
+        winding=1,
     )
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
@@ -57,6 +57,8 @@ def _main() -> None:
         (signal1,),
         (background_comp,),
     )
+
+    print(f"{len(mock_model._signal)}-arm model")
 
     num_x_bins = 100
     num_y_bins = 100
@@ -67,9 +69,9 @@ def _main() -> None:
     y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 100_000
+    num_particles: int = 1_000_000
     print(f"Sampling {num_particles} particles...")
-    particles = mock_model.mock_particles(num_particles, x_edges, y_edges)
+    particles = mock_model.mock_particles(num_particles, x_edges, y_edges, seed=1)
     z_samples = particles.x
     vz_samples = particles.y
 
@@ -87,7 +89,7 @@ def _main() -> None:
     fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
     start_time = time.perf_counter()
     res_py = fitter_py.fit_spiral_with_background(
-        density, initial_background, x_mesh, y_mesh, num_components=2, improve_background=True
+        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True
     )
     elapsed_py = time.perf_counter() - start_time
     print(f"Python took {elapsed_py:.3f} seconds")
@@ -115,7 +117,7 @@ def _main() -> None:
     rs_background = res_rust.final_background.reshape(x_mesh.shape)
     rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(12, 8))
     # [true density, python density, rust density]
     # [true background, python background, rust background]
     true_density_axes = fig.add_subplot(231)
@@ -124,6 +126,13 @@ def _main() -> None:
     true_background_axes = fig.add_subplot(234)
     py_background_axes = fig.add_subplot(235)
     rs_background_axes = fig.add_subplot(236)
+
+    true_density_axes.set_title("True density")
+    py_density_axes.set_title(f"Python density: lnl = {res_py.lnl}")
+    rs_density_axes.set_title(f"Rust density: lnl = {res_rust.lnl}")
+    true_background_axes.set_title("True background")
+    py_background_axes.set_title("Python background")
+    rs_background_axes.set_title("Rust background")
 
     true_density_axes.pcolormesh(x_mesh, y_mesh, density)
     py_density_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.prediction())

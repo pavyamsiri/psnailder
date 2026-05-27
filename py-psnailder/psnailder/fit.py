@@ -61,6 +61,7 @@ class PSpiralFitResult:
     num_iterations: int
     max_iterations: int | None
     converged: bool
+    lnl: float
 
 
 def create_gaussian_smoother(sigma: float) -> _SmoothingFunc:
@@ -289,12 +290,12 @@ class PSpiralFitter:
             # Penalize the larger model using AIC: AIC = 2k - 2 lnL, k = number of parameters
             k1 = 6
             k2 = 12
-            a1 = 2 * k1 - 2.0 * q1
-            a2 = 2 * k2 - 2.0 * q2
+            # a1 = 2 * k1 - 2.0 * q1
+            # a2 = 2 * k2 - 2.0 * q2
             num_particles = np.sum(initial_density)
-            a1 = 6 * np.log(num_particles) - 2.0 * q1
-            a2 = 12 * np.log(num_particles) - 2.0 * q2
-            if a2 < a1:
+            b1 = k1 * np.log(num_particles) - 2.0 * q1
+            b2 = k2 * np.log(num_particles) - 2.0 * q2
+            if b2 < b1:
                 num_components = 2
                 current_warm_start = res2.final_model.to_array()
             else:
@@ -367,6 +368,7 @@ class PSpiralFitter:
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
                 converged=converged,
+                lnl=-res.fun,
             )
 
             # Update background
@@ -398,6 +400,7 @@ class PSpiralFitter:
             num_iterations=num_iterations,
             max_iterations=self._max_iterations,
             converged=converged,
+            lnl=best_quality,
         )
 
     def _optimize_parameters(
@@ -413,19 +416,7 @@ class PSpiralFitter:
         base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
         bounds = base_bounds * param_count
 
-        best_res: optimize.OptimizeResult | None = None
-        for i in range(self._num_starts):
-            x0: onp.Array1D[np.float64]
-            if i == 0 and warm_start is not None and len(warm_start) == 6 * param_count:
-                x0 = warm_start
-            else:
-                # Sample each component's 6 params independently
-                x0 = rng.uniform(np.tile(self._param_lo, param_count), np.tile(self._param_hi, param_count))
-            res = optimize.minimize(objective_func, x0=x0, bounds=bounds)
-            if best_res is None or res.fun < best_res.fun:
-                best_res = res
-        assert best_res is not None, "failed to find a single minimum."
-        return best_res
+        return optimize.differential_evolution(objective_func, bounds=bounds, seed=rng)
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:
