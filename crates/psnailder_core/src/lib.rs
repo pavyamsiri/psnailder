@@ -1,3 +1,11 @@
+pub fn create_sigmoid_mask(x_scale: f64, y_scale: f64) -> impl Fn(f64, f64) -> f64 {
+    move |x: f64, y: f64| {
+        let xs = x / x_scale;
+        let ys = y / y_scale;
+        -expit(xs * xs + ys * ys - 1.0) + 1.0
+    }
+}
+
 pub fn ln_likelihood_f64(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
     assert_eq!(data.len(), prediction.len());
     assert_eq!(data.len(), mask.len());

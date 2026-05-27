@@ -1,4 +1,4 @@
-use psnailder_core::PSpiralComponent;
+use psnailder_core::{PSpiralComponent, create_sigmoid_mask};
 use psnailder_fit::{PSpiralFitter, PSpiralFitterND};
 use psnailder_mock::{BackgroundComponent, GaussianComponent, MockModel, SignalComponent};
 
@@ -69,11 +69,12 @@ fn main() {
         },
     };
 
+    let mask_func = create_sigmoid_mask(1.0, 40.0);
     let mask: Vec<f64> = mock_result
         .mesh_x
         .iter()
         .zip(mock_result.mesh_y.iter())
-        .map(|(x, y)| -psnailder_core::expit(x * x + (y * y) / (40.0 * 40.0) - 1.0) + 1.0)
+        .map(|(x, y)| mask_func(*x, *y))
         .collect();
 
     let density = mock_result.density;

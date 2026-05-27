@@ -1,5 +1,5 @@
 use argmin::core::CostFunction;
-use psnailder_core::PSpiralComponent;
+use psnailder_core::{PSpiralComponent, PSpiralModel};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
@@ -92,9 +92,27 @@ pub struct PSpiralFitterND<const N: usize> {
     pub rho_bounds: (f64, f64),
 }
 
+pub struct PSpiralFitterIterative {
+    pub fitter: PSpiralFitter,
+    pub best_background: Vec<f64>,
+    pub iteration_index: usize,
+}
+
 pub struct PSpiralFitter {
-    pub fitter1d: PSpiralFitterND<6>,
-    pub fitter2d: PSpiralFitterND<12>,
+    pub fitter_single: PSpiralFitterND<6>,
+    pub fitter_double: PSpiralFitterND<12>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PSpiralFitResult {
+    pub data: Vec<f64>,
+    pub initial_model: PSpiralModel,
+    pub initial_background: Vec<f64>,
+    pub final_model: PSpiralModel,
+    pub final_background: Vec<f64>,
+    pub num_iterations: usize,
+    pub max_iterations: Option<usize>,
+    pub converged: bool,
 }
 
 impl PSpiralFitter {
@@ -105,32 +123,49 @@ impl PSpiralFitter {
         mask: &[f64],
         mesh_x: &[f64],
         mesh_y: &[f64],
-    ) {
-        let (model1d, ll1d) = self.fitter1d.fit_spiral_with_background(
+    ) -> PSpiralFitResult {
+        let (model_single, ll_single) = self.fitter_single.fit_spiral_with_background(
             initial_density,
             initial_background,
             mask,
             mesh_x,
             mesh_y,
         );
-        let (model2da, model2db, ll2d) = self.fitter2d.fit_spiral_with_background(
-            initial_density,
-            initial_background,
-            mask,
-            mesh_x,
-            mesh_y,
-        );
+        let (model_double_a, model_double_b, ll_double) = self
+            .fitter_double
+            .fit_spiral_with_background(initial_density, initial_background, mask, mesh_x, mesh_y);
 
-        let aic1d = 2.0 * 6.0 - 2.0 * ll1d;
-        let aic2d = 2.0 * 6.0 - 2.0 * ll2d;
+        let aic_single = 2.0 * 6.0 - 2.0 * ll_single;
+        let aic_double = 2.0 * 6.0 - 2.0 * ll_double;
 
-        if aic2d < aic1d {
-            println!("2 components!");
-            println!("modela = {model2da:?}!");
-            println!("modelb = {model2db:?}!");
+        if aic_double < aic_single {
+            let model = PSpiralModel {
+                components: vec![model_double_a, model_double_b],
+            };
+            PSpiralFitResult {
+                data: initial_density.to_vec(),
+                initial_model: model.clone(),
+                initial_background: initial_background.to_vec(),
+                final_model: model,
+                final_background: initial_background.to_vec(),
+                num_iterations: 1,
+                max_iterations: Some(1),
+                converged: true,
+            }
         } else {
-            println!("1 components!");
-            println!("model = {model1d:?}!");
+            let model = PSpiralModel {
+                components: vec![model_single],
+            };
+            PSpiralFitResult {
+                data: initial_density.to_vec(),
+                initial_model: model.clone(),
+                initial_background: initial_background.to_vec(),
+                final_model: model,
+                final_background: initial_background.to_vec(),
+                num_iterations: 1,
+                max_iterations: Some(1),
+                converged: true,
+            }
         }
     }
 }
