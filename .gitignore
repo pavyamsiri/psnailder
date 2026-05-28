@@ -11,3 +11,4 @@ wheels/
 
 /target/
 *.so
+*.png
