@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use argmin::core::CostFunction;
-use psnailder_core::{ln_likelihood_f64, PSpiralComponent, PSpiralModel};
+use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_f64};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
@@ -175,13 +175,13 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
     let half_size = (kernel_size / 2) as i32;
     let s2 = 2.0 * sigma * sigma;
     let mut sum = 0.0;
-    for i in 0..kernel_size {
+    for (i, kk) in kernel.iter_mut().enumerate() {
         let x = (i as i32 - half_size) as f64;
-        kernel[i] = (-x * x / s2).exp();
-        sum += kernel[i];
+        *kk = (-x * x / s2).exp();
+        sum += *kk;
     }
-    for i in 0..kernel_size {
-        kernel[i] /= sum;
+    for kk in kernel.iter_mut() {
+        *kk /= sum;
     }
 
     let mut out = ndarray::Array2::from_shape_vec(shape, data.to_vec()).unwrap();
@@ -191,9 +191,9 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
     for r in 0..rows {
         for c in 0..cols {
             let mut val = 0.0;
-            for i in 0..kernel_size {
+            for (i, kk) in kernel.iter().enumerate() {
                 let cc = (c as i32 + i as i32 - half_size).clamp(0, cols as i32 - 1) as usize;
-                val += out[[r, cc]] * kernel[i];
+                val += out[[r, cc]] * kk;
             }
             temp[[r, c]] = val;
         }
@@ -203,15 +203,15 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
     for r in 0..rows {
         for c in 0..cols {
             let mut val = 0.0;
-            for i in 0..kernel_size {
+            for (i, kk) in kernel.iter().enumerate() {
                 let rr = (r as i32 + i as i32 - half_size).clamp(0, rows as i32 - 1) as usize;
-                val += temp[[rr, c]] * kernel[i];
+                val += temp[[rr, c]] * kk;
             }
             out[[r, c]] = val;
         }
     }
 
-    Arc::from(out.into_raw_vec())
+    Arc::from(out.into_raw_vec_and_offset().0)
 }
 
 impl<'a> Iterator for PSpiralFitterIterative<'a> {
@@ -222,11 +222,11 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             return None;
         }
 
-        if let Some(max_iter) = self.max_iterations {
-            if self.iteration_index >= max_iter {
-                self.is_finished = true;
-                return None;
-            }
+        if let Some(max_iter) = self.max_iterations
+            && self.iteration_index >= max_iter
+        {
+            self.is_finished = true;
+            return None;
         }
 
         self.iteration_index += 1;
@@ -332,7 +332,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             .map(|(d, p)| d / p.max(1e-10))
             .collect();
 
-        let blurred_background = gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
+        let blurred_background =
+            gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
         let mut blurred_background_vec = blurred_background.to_vec();
 
         let next_bg_sum: f64 = blurred_background_vec.iter().sum();
@@ -425,11 +426,7 @@ impl PSpiralFitter {
             let bic_single = ln_norm * 6.0 - 2.0 * ll_single;
             let bic_double = ln_norm * 12.0 - 2.0 * ll_double;
 
-            if bic_double < bic_single {
-                2
-            } else {
-                1
-            }
+            if bic_double < bic_single { 2 } else { 1 }
         };
 
         PSpiralFitterIterative {
@@ -464,7 +461,7 @@ impl PSpiralFitter {
         mesh_y: &[f64],
         shape: (usize, usize),
     ) -> PSpiralFitResult {
-        let mut it = self.fit_spiral_with_background_iterative(
+        let it = self.fit_spiral_with_background_iterative(
             initial_density,
             initial_background,
             mask,
@@ -476,12 +473,11 @@ impl PSpiralFitter {
             true,
         );
 
-        let mut last = None;
-        while let Some(res) = it.next() {
-            last = Some(res);
-        }
+        let Some(last) = it.last() else {
+            panic!("should have at least one result");
+        };
 
-        last.expect("should have at least one result")
+        last
     }
 }
 
