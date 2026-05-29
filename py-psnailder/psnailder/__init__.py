@@ -85,18 +85,6 @@ def _main() -> None:
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
 
-    print("\n--- Python Version ---")
-    fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
-    start_time = time.perf_counter()
-    res_py = fitter_py.fit_spiral_with_background(
-        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True
-    )
-    elapsed_py = time.perf_counter() - start_time
-    print(f"Python took {elapsed_py:.3f} seconds")
-    print(f"Python iterations: {res_py.num_iterations}")
-    print(f"Python converged: {res_py.converged}")
-    print(f"Python final model: {res_py.final_model}")
-
     print("\n--- Rust Version ---")
     fitter_rust = PSpiralFitterRust(num_samples=256, max_iterations=10)
     start_time = time.perf_counter()
@@ -113,6 +101,18 @@ def _main() -> None:
     print(f"Rust iterations: {res_rust.num_iterations}")
     print(f"Rust converged: {res_rust.converged}")
     print(f"Rust final model: {res_rust.final_model}")
+
+    print("\n--- Python Version ---")
+    fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
+    start_time = time.perf_counter()
+    res_py = fitter_py.fit_spiral_with_background(
+        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True
+    )
+    elapsed_py = time.perf_counter() - start_time
+    print(f"Python took {elapsed_py:.3f} seconds")
+    print(f"Python iterations: {res_py.num_iterations}")
+    print(f"Python converged: {res_py.converged}")
+    print(f"Python final model: {res_py.final_model}")
 
     rs_background = res_rust.final_background.reshape(x_mesh.shape)
     rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background
