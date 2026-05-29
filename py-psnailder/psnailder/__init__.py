@@ -69,7 +69,7 @@ def _main() -> None:
     y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 1_000_000
+    num_particles: int = 100_000
     print(f"Sampling {num_particles} particles...")
     particles = mock_model.mock_particles(num_particles, x_edges, y_edges, seed=1)
     z_samples = particles.x
@@ -98,7 +98,7 @@ def _main() -> None:
     print(f"Python final model: {res_py.final_model}")
 
     print("\n--- Rust Version ---")
-    fitter_rust = PSpiralFitterRust(num_samples=4096, max_iterations=10)
+    fitter_rust = PSpiralFitterRust(num_samples=256, max_iterations=10)
     start_time = time.perf_counter()
     res_rust = fitter_rust.fit_spiral_with_background(
         density.flatten(),
