@@ -116,11 +116,10 @@ impl<const N: usize> TikTak<N> {
 
         let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
-        let mut nfev: u64 = 0;
-
         use rayon::prelude::*;
 
-        let evaluated_points: Vec<_> = self.points
+        let evaluated_points: Vec<_> = self
+            .points
             .par_iter()
             .map(|point| {
                 let scaled_point: Vec<f64> = point
@@ -137,8 +136,6 @@ impl<const N: usize> TikTak<N> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        nfev += evaluated_points.len() as u64;
-
         for ep in evaluated_points {
             heap.push(ep);
             if heap.len() > self.num_star {
@@ -150,71 +147,70 @@ impl<const N: usize> TikTak<N> {
 
         let best_points = heap.into_sorted_vec();
 
-        let mut global_best_cost = f64::INFINITY;
-        let mut global_best_param: Option<Vec<f64>> = None;
+        let global_best_param: Vec<f64> = best_points.first().unwrap().point.clone();
 
-        for (idx, current_seed) in best_points.into_iter().enumerate() {
-            let weight = (((idx + 1) as f64) / (self.num_star as f64))
-                .powf(0.5)
-                .clamp(self.min_weight, self.max_weight);
+        let mut solutions = best_points
+            .into_par_iter()
+            .enumerate()
+            .filter_map(|(idx, current_seed)| {
+                let weight = (((idx + 1) as f64) / (self.num_star as f64))
+                    .powf(0.5)
+                    .clamp(self.min_weight, self.max_weight);
 
-            let new_seed = if let Some(global_best_param) = &global_best_param {
-                current_seed
+                let new_seed: Vec<f64> = current_seed
                     .point
                     .iter()
                     .zip(global_best_param.iter())
                     .map(|(current_param, best_param)| {
                         (1.0 - weight) * current_param + weight * best_param
                     })
-                    .collect()
-            } else {
-                current_seed.point.clone()
-            };
+                    .collect();
 
-            let mut vertices = vec![];
-            for d in 0..ndim {
-                let mut v = new_seed.clone();
-                v[d] += if v[d].abs() > 1e-8 {
-                    SIMPLEX_STEP * v[d].abs()
-                } else {
-                    SIMPLEX_STEP
-                };
-                vertices.push(v);
-            }
-            vertices.push(new_seed);
-
-            let solver = match NelderMead::new(vertices).with_sd_tolerance(SD_TOLERANCE) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("restart {idx}: failed to build solver – {e}");
-                    continue;
+                let mut vertices = vec![];
+                for d in 0..ndim {
+                    let mut v = new_seed.clone();
+                    v[d] += if v[d].abs() > 1e-8 {
+                        SIMPLEX_STEP * v[d].abs()
+                    } else {
+                        SIMPLEX_STEP
+                    };
+                    vertices.push(v);
                 }
-            };
+                vertices.push(new_seed);
 
-            match Executor::new(cost_func.clone(), solver)
-                .configure(|state| state.max_iters(200))
-                .run()
-            {
-                Ok(r) => {
-                    if let Some(best_param) = r.state().get_best_param() {
-                        let best_cost = r.state().get_best_cost();
-                        if best_cost < global_best_cost {
-                            global_best_cost = best_cost;
-                            global_best_param = Some(best_param.clone());
+                let solver = match NelderMead::new(vertices).with_sd_tolerance(SD_TOLERANCE) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("restart {idx}: failed to build solver – {e}");
+                        return None;
+                    }
+                };
+
+                match Executor::new(cost_func.clone(), solver)
+                    .configure(|state| state.max_iters(200))
+                    .run()
+                {
+                    Ok(r) => {
+                        let nfev = r.problem().counts.get("cost_count").unwrap();
+                        if let Some(best_param) = r.state().get_best_param() {
+                            let best_cost = r.state().get_best_cost();
+                            return Some((best_cost, best_param.to_owned(), *nfev));
                         }
                     }
-                    nfev += r.problem().counts.get("cost_count").unwrap();
+                    Err(e) => eprintln!("restart {idx} failed: {e}"),
                 }
-                Err(e) => eprintln!("restart {idx} failed: {e}"),
-            }
-        }
+                None
+            })
+            .collect::<Vec<(f64, Vec<f64>, u64)>>();
 
-        let Some(global_best_param) = global_best_param else {
-            panic!("no best param?");
-        };
+        solutions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        let nfev = solutions.iter().map(|(_, _, nfev)| nfev).sum::<u64>() + self.num_samples as u64;
+        let (global_best_cost, global_best_param, _) = solutions.first().unwrap();
+
         Ok(OptimizationResult {
-            params: global_best_param,
-            cost: global_best_cost,
+            params: global_best_param.to_owned(),
+            cost: *global_best_cost,
             nfev,
         })
     }
