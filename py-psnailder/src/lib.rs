@@ -2,6 +2,7 @@ use numpy::{PyArray1, PyReadonlyArray1};
 use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
 use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
 use pyo3::prelude::*;
+use statrs::distribution::ContinuousCDF;
 
 #[pyclass]
 #[derive(Clone, Debug)]
@@ -149,6 +150,10 @@ pub struct PSpiralFitResult {
     pub converged: bool,
     #[pyo3(get)]
     pub lnl: f64,
+    #[pyo3(get)]
+    pub initial_pvalue: f64,
+    #[pyo3(get)]
+    pub final_pvalue: f64,
 }
 
 #[pymethods]
@@ -242,6 +247,21 @@ impl PSpiralFitter {
             shape,
         );
 
+        let dof = (6 * res.final_model.components.len()) as f64;
+        let dist =
+            statrs::distribution::ChiSquared::new(dof).expect("`freedom` is guaranteed positive.");
+        let lnl_initial_null =
+            psnailder_core::ln_likelihood_f64(initial_density, &res.initial_background, mask);
+        let lnl_final_null =
+            psnailder_core::ln_likelihood_f64(initial_density, &res.final_background, mask);
+        let lnl_initial = res.initial_lnl;
+        let lnl_final = res.final_lnl;
+        let lambda_initial = -2.0 * (lnl_initial_null - lnl_initial);
+        let lambda_final = -2.0 * (lnl_final_null - lnl_final);
+
+        let initial_pvalue = dist.sf(lambda_initial);
+        let final_pvalue = dist.sf(lambda_final);
+
         Ok(PSpiralFitResult {
             initial_model: PSpiralModel(res.initial_model),
             final_model: PSpiralModel(res.final_model),
@@ -251,7 +271,9 @@ impl PSpiralFitter {
             num_iterations: res.num_iterations,
             max_iterations: res.max_iterations,
             converged: res.converged,
-            lnl: res.lnl,
+            lnl: res.final_lnl,
+            initial_pvalue,
+            final_pvalue,
         })
     }
 }

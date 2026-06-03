@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from psnailder import component, fit, model
+from psnailder._likelihood_utils import ln_likelihood
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,7 +70,7 @@ def _main() -> None:
     y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 100_000
+    num_particles: int = 50_000
     print(f"Sampling {num_particles} particles...")
     particles = mock_model.mock_particles(num_particles, x_edges, y_edges, seed=1)
     z_samples = particles.x
@@ -84,6 +85,8 @@ def _main() -> None:
     initial_background = initial_background / np.sum(initial_background) * np.sum(density)
 
     mask = fit.create_sigmoid_mask(1.0, 40.0)(x_mesh, y_mesh)
+
+    print(f"ln likelihood (null) = {ln_likelihood(density, initial_background, mask)}")
 
     print("\n--- Rust Version ---")
     fitter_rust = PSpiralFitterRust(num_samples=256, max_iterations=10)
@@ -101,6 +104,8 @@ def _main() -> None:
     print(f"Rust iterations: {res_rust.num_iterations}")
     print(f"Rust converged: {res_rust.converged}")
     print(f"Rust final model: {res_rust.final_model}")
+    print(f"Rust final lnl: {res_rust.lnl}")
+    print(f"Rust pvalue : {res_rust.final_pvalue}")
 
     print("\n--- Python Version ---")
     fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
@@ -113,6 +118,8 @@ def _main() -> None:
     print(f"Python iterations: {res_py.num_iterations}")
     print(f"Python converged: {res_py.converged}")
     print(f"Python final model: {res_py.final_model}")
+    print(f"Python final lnl: {res_py.lnl}")
+    print(f"Python pvalue: {res_py.final_model.pvalue(density, mask)}")
 
     rs_background = res_rust.final_background.reshape(x_mesh.shape)
     rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background

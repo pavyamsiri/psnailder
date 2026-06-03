@@ -139,7 +139,8 @@ pub struct PSpiralFitResult {
     pub num_iterations: usize,
     pub max_iterations: Option<usize>,
     pub converged: bool,
-    pub lnl: f64,
+    pub initial_lnl: f64,
+    pub final_lnl: f64,
 }
 
 pub struct PSpiralFitterIterative<'a> {
@@ -153,6 +154,7 @@ pub struct PSpiralFitterIterative<'a> {
     pub shape: (usize, usize),
     pub num_components: usize,
     pub best_winding: Option<i8>,
+    pub initial_quality: f64,
     pub best_quality: f64,
     pub best_model: Option<PSpiralModel>,
     pub initial_model: Option<PSpiralModel>,
@@ -299,9 +301,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         // 2. Set initial model
         if self.initial_model.is_none() {
             self.initial_model = Some(current_model.clone());
-            if self.best_quality == f64::NEG_INFINITY {
-                self.best_quality = ll;
-            }
+            self.best_quality = ll;
+            self.initial_quality = ll;
         }
 
         if !self.improve_background {
@@ -317,7 +318,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
-                lnl: self.best_quality,
+                initial_lnl: self.initial_quality,
+                final_lnl: self.best_quality,
             });
         }
 
@@ -368,7 +370,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                 num_iterations: self.iteration_index,
                 max_iterations: self.max_iterations,
                 converged: self.converged,
-                lnl: self.best_quality,
+                initial_lnl: self.initial_quality,
+                final_lnl: self.best_quality,
             });
         }
 
@@ -385,7 +388,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             num_iterations: self.iteration_index,
             max_iterations: self.max_iterations,
             converged: self.converged,
-            lnl: self.best_quality,
+            initial_lnl: self.initial_quality,
+            final_lnl: self.best_quality,
         })
     }
 }
@@ -440,6 +444,7 @@ impl PSpiralFitter {
             shape,
             num_components: actual_num_components,
             best_winding: winding,
+            initial_quality: f64::NEG_INFINITY,
             best_quality: f64::NEG_INFINITY,
             best_model: None,
             initial_model: None,

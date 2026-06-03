@@ -15,6 +15,7 @@ psnailder_core = { workspace = true }
 psnailder_fit = { workspace = true }
 psnailder_tiktak = { workspace = true }
 numpy = { workspace = true }
+statrs = { workspace = true }
 
 
 [features]

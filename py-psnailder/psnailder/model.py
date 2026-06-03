@@ -61,7 +61,7 @@ class PSpiralModel:
         phase = np.empty_like(r)
         abs_b = np.abs(b)
         abs_c = np.abs(c)
-        c_mask = (abs_c[:, 0, 0] > 1e-10)
+        c_mask = abs_c[:, 0, 0] > 1e-10
 
         # Compute for components where c != 0 using boolean indexing
         half = 0.5 * abs_b[c_mask] / abs_c[c_mask]
@@ -84,7 +84,7 @@ class PSpiralModel:
         assert self.z_mesh.shape == self.background.shape
         assert self.z_mesh.shape == data.shape
 
-        return lrt_pvalue(data, self.prediction(), self.background, mask, dof=6)
+        return lrt_pvalue(data, self.prediction(), self.background, mask, dof=6 * self.parameters.shape[0])
 
     @property
     def components(self) -> Sequence[PSpiralComponent]:
