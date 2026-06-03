@@ -1,8 +1,5 @@
-use argmin::{
-    core::{CostFunction, Error, Executor, State},
-    solver::neldermead::NelderMead,
-};
 use argmin_testfunctions::rosenbrock;
+use basin::CostFunction;
 use core::{cmp, fmt};
 use std::collections::BinaryHeap;
 
@@ -105,15 +102,20 @@ impl<const N: usize> TikTak<N> {
 }
 
 impl<const N: usize> TikTak<N> {
-    pub fn minimize(
+    pub fn minimize<C>(
         &self,
-        cost_func: impl CostFunction<Param = Vec<f64>, Output = f64> + Clone + fmt::Debug + Sync + Send,
+        cost_func: C,
         bounds: &[(f64, f64)],
-    ) -> Result<OptimizationResult, Error> {
-        const SIMPLEX_STEP: f64 = 0.05;
-        const SD_TOLERANCE: f64 = 1e-6;
-        let ndim = bounds.len();
-
+    ) -> Result<OptimizationResult, C::Error>
+    where
+        C: CostFunction<Param = Vec<f64>, Output = f64>
+            + Clone
+            + fmt::Debug
+            + Sync
+            + Send
+            + basin::BoxConstraints,
+        C::Error: Send + fmt::Display,
+    {
         let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
         use rayon::prelude::*;
@@ -129,7 +131,7 @@ impl<const N: usize> TikTak<N> {
                     .collect();
 
                 let cost = cost_func.cost(&scaled_point)?;
-                Ok::<_, Error>(OrderedPoint {
+                Ok::<_, C::Error>(OrderedPoint {
                     cost,
                     point: scaled_point,
                 })
@@ -166,36 +168,19 @@ impl<const N: usize> TikTak<N> {
                     })
                     .collect();
 
-                let mut vertices = vec![];
-                for d in 0..ndim {
-                    let mut v = new_seed.clone();
-                    v[d] += if v[d].abs() > 1e-8 {
-                        SIMPLEX_STEP * v[d].abs()
-                    } else {
-                        SIMPLEX_STEP
-                    };
-                    vertices.push(v);
-                }
-                vertices.push(new_seed);
-
-                let solver = match NelderMead::new(vertices).with_sd_tolerance(SD_TOLERANCE) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("restart {idx}: failed to build solver – {e}");
-                        return None;
-                    }
-                };
-
-                match Executor::new(cost_func.clone(), solver)
-                    .configure(|state| state.max_iters(200))
-                    .run()
+                match basin::Executor::new(
+                    cost_func.clone(),
+                    basin::NelderMead::standard().projected(),
+                    basin::BasicSimplexState::new(new_seed),
+                )
+                .max_iter(200)
+                .run()
                 {
                     Ok(r) => {
-                        let nfev = r.problem().counts.get("cost_count").unwrap();
-                        if let Some(best_param) = r.state().get_best_param() {
-                            let best_cost = r.state().get_best_cost();
-                            return Some((best_cost, best_param.to_owned(), *nfev));
-                        }
+                        let nfev = r.cost_evals();
+                        let best_param = r.best_param();
+                        let best_cost = r.best_cost();
+                        return Some((best_cost, best_param.to_owned(), nfev));
                     }
                     Err(e) => eprintln!("restart {idx} failed: {e}"),
                 }
@@ -217,19 +202,39 @@ impl<const N: usize> TikTak<N> {
 }
 
 #[derive(Debug, Clone)]
-struct Rosenbrock;
+struct Rosenbrock {
+    lb: Vec<f64>,
+    ub: Vec<f64>,
+}
 
-impl CostFunction for Rosenbrock {
+impl basin::CostFunction for Rosenbrock {
     type Param = Vec<f64>;
     type Output = f64;
-    fn cost(&self, p: &Self::Param) -> Result<Self::Output, Error> {
+    type Error = core::convert::Infallible;
+    fn cost(&self, p: &Self::Param) -> Result<Self::Output, Self::Error> {
         Ok(rosenbrock(p))
     }
 }
 
-pub fn run() -> Result<(), Error> {
+impl basin::BoxConstraints for Rosenbrock {
+    fn lower(&self) -> &Self::Param {
+        &self.lb
+    }
+
+    fn upper(&self) -> &Self::Param {
+        &self.ub
+    }
+}
+
+pub fn run() -> Result<(), core::convert::Infallible> {
     let tiktak = TikTak::<2>::new(10, 128.0f32.recip(), 0.1, 0.995);
-    let res = tiktak.minimize(Rosenbrock, &[(-5.0, 5.0), (-5.0, 5.0)])?;
+    let res = tiktak.minimize(
+        Rosenbrock {
+            lb: vec![-5.0, -5.0],
+            ub: vec![5.0, 5.0],
+        },
+        &[(-5.0, 5.0), (-5.0, 5.0)],
+    )?;
     println!("{res:?}");
     Ok(())
 }

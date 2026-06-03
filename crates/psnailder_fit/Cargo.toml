@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-argmin = { workspace = true }
+basin= { workspace = true }
 itertools = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }

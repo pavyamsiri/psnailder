@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use argmin::core::CostFunction;
+use basin::{BoxConstraints, CostFunction};
 use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_f64};
 use psnailder_tiktak::TikTak;
 
@@ -12,13 +12,16 @@ struct PSpiralModelProblem<'prob, const NUM_COMPONENTS: u8> {
     x: &'prob [f64],
     y: &'prob [f64],
     winding: i8,
+    lb: &'prob Vec<f64>,
+    ub: &'prob Vec<f64>,
 }
 
 impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
     type Param = Vec<f64>;
     type Output = f64;
+    type Error = core::convert::Infallible;
 
-    fn cost(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp = PSpiralComponent {
             alpha: param[0],
             b: param[1],
@@ -50,8 +53,9 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
 impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
     type Param = Vec<f64>;
     type Output = f64;
+    type Error = core::convert::Infallible;
 
-    fn cost(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp1 = PSpiralComponent {
             alpha: param[0],
             b: param[1],
@@ -88,6 +92,26 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
             .sum();
 
         Ok(0.5 * res)
+    }
+}
+
+impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 1> {
+    fn lower(&self) -> &Self::Param {
+        self.lb
+    }
+
+    fn upper(&self) -> &Self::Param {
+        self.ub
+    }
+}
+
+impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 2> {
+    fn lower(&self) -> &Self::Param {
+        self.lb
+    }
+
+    fn upper(&self) -> &Self::Param {
+        self.ub
     }
 }
 
@@ -528,6 +552,22 @@ impl PSpiralFitterND<6> {
         mesh_y: &[f64],
         winding: i8,
     ) -> (PSpiralComponent, f64) {
+        let lb = vec![
+            self.alpha_bounds.0,
+            self.b_bounds.0,
+            self.c_bounds.0,
+            self.theta0_bounds.0,
+            self.scale_factor_bounds.0,
+            self.rho_bounds.0,
+        ];
+        let ub = vec![
+            self.alpha_bounds.1,
+            self.b_bounds.1,
+            self.c_bounds.1,
+            self.theta0_bounds.1,
+            self.scale_factor_bounds.1,
+            self.rho_bounds.1,
+        ];
         let res = self
             .tiktak
             .minimize(
@@ -538,6 +578,8 @@ impl PSpiralFitterND<6> {
                     x: mesh_x,
                     y: mesh_y,
                     winding,
+                    lb: &lb,
+                    ub: &ub,
                 },
                 &[
                     self.alpha_bounds,
@@ -607,6 +649,34 @@ impl PSpiralFitterND<12> {
         mesh_y: &[f64],
         winding: i8,
     ) -> (PSpiralComponent, PSpiralComponent, f64) {
+        let lb = vec![
+            self.alpha_bounds.0,
+            self.b_bounds.0,
+            self.c_bounds.0,
+            self.theta0_bounds.0,
+            self.scale_factor_bounds.0,
+            self.rho_bounds.0,
+            self.alpha_bounds.0,
+            self.b_bounds.0,
+            self.c_bounds.0,
+            self.theta0_bounds.0,
+            self.scale_factor_bounds.0,
+            self.rho_bounds.0,
+        ];
+        let ub = vec![
+            self.alpha_bounds.1,
+            self.b_bounds.1,
+            self.c_bounds.1,
+            self.theta0_bounds.1,
+            self.scale_factor_bounds.1,
+            self.rho_bounds.1,
+            self.alpha_bounds.1,
+            self.b_bounds.1,
+            self.c_bounds.1,
+            self.theta0_bounds.1,
+            self.scale_factor_bounds.1,
+            self.rho_bounds.1,
+        ];
         let res = self
             .tiktak
             .minimize(
@@ -617,6 +687,8 @@ impl PSpiralFitterND<12> {
                     x: mesh_x,
                     y: mesh_y,
                     winding,
+                    lb: &lb,
+                    ub: &ub,
                 },
                 &[
                     self.alpha_bounds,
