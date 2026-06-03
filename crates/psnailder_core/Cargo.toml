@@ -5,6 +5,16 @@ edition = "2024"
 
 [dependencies]
 itertools = { workspace = true }
+wide = { workspace = true }
+
+[dev-dependencies]
+assert_float_eq = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "likelihood"
+harness = false
