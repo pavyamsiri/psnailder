@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use basin::{BoxConstraints, CostFunction};
-use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_wide as ln_likelihood};
+use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
