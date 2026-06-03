@@ -1,18 +1,20 @@
+use itertools::izip;
+
 pub fn create_sigmoid_mask(x_scale: f64, y_scale: f64) -> impl Fn(f64, f64) -> f64 {
     move |x: f64, y: f64| {
         let xs = x / x_scale;
         let ys = y / y_scale;
-        expit(- (xs * xs + ys * ys - 1.0))
+        expit(-(xs * xs + ys * ys - 1.0))
     }
 }
 
-pub fn ln_likelihood_f64(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
+pub fn ln_likelihood(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
     assert_eq!(data.len(), prediction.len());
     assert_eq!(data.len(), mask.len());
 
     let mut result = 0.0;
-    for ((current_data, current_prediction), current_mask) in
-        data.iter().zip(prediction.iter()).zip(mask.iter())
+    for (current_data, current_prediction, current_mask) in
+        izip!(data.iter(), prediction.iter(), mask.iter())
     {
         if *current_prediction <= 0.0 {
             continue;
@@ -47,7 +49,7 @@ impl PSpiralModel {
         assert_eq!(z.len(), vz.len());
         assert_eq!(z.len(), out.len());
 
-        for ((zz, vzz), oo) in z.iter().zip(vz.iter()).zip(out.iter_mut()) {
+        for (zz, vzz, oo) in izip!(z.iter(), vz.iter(), out.iter_mut()) {
             *oo = self.perturbation_scalar(*zz, *vzz);
         }
     }
@@ -86,7 +88,7 @@ impl PSpiralComponent {
     #[inline]
     pub fn perturbation_scalar(&self, z: f64, vz: f64) -> f64 {
         let scale_factor = self.scale_factor;
-        
+
         let r = z.hypot(vz / scale_factor);
         let theta = vz.atan2(z * scale_factor);
 
@@ -100,7 +102,7 @@ impl PSpiralComponent {
         assert_eq!(z.len(), vz.len());
         assert_eq!(z.len(), out.len());
 
-        for ((zz, vzz), oo) in z.iter().zip(vz.iter()).zip(out.iter_mut()) {
+        for (zz, vzz, oo) in izip!(z.iter(), vz.iter(), out.iter_mut()) {
             *oo = self.perturbation_scalar(*zz, *vzz);
         }
     }

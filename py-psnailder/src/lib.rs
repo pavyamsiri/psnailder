@@ -251,9 +251,9 @@ impl PSpiralFitter {
         let dist =
             statrs::distribution::ChiSquared::new(dof).expect("`freedom` is guaranteed positive.");
         let lnl_initial_null =
-            psnailder_core::ln_likelihood_f64(initial_density, &res.initial_background, mask);
+            psnailder_core::ln_likelihood(initial_density, &res.initial_background, mask);
         let lnl_final_null =
-            psnailder_core::ln_likelihood_f64(initial_density, &res.final_background, mask);
+            psnailder_core::ln_likelihood(initial_density, &res.final_background, mask);
         let lnl_initial = res.initial_lnl;
         let lnl_final = res.final_lnl;
         let lambda_initial = -2.0 * (lnl_initial_null - lnl_initial);
@@ -279,7 +279,7 @@ impl PSpiralFitter {
 }
 
 #[pyfunction]
-fn ln_likelihood_f64(
+fn ln_likelihood(
     data: PyReadonlyArray1<f64>,
     prediction: PyReadonlyArray1<f64>,
     mask: PyReadonlyArray1<f64>,
@@ -288,12 +288,12 @@ fn ln_likelihood_f64(
     let prediction = prediction.as_slice()?;
     let mask = mask.as_slice()?;
 
-    Ok(psnailder_core::ln_likelihood_f64(data, prediction, mask))
+    Ok(psnailder_core::ln_likelihood(data, prediction, mask))
 }
 
 #[pymodule]
 fn _internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(ln_likelihood_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(ln_likelihood, m)?)?;
     m.add_class::<PSpiralComponent>()?;
     m.add_class::<PSpiralModel>()?;
     m.add_class::<PSpiralFitter>()?;

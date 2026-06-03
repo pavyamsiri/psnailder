@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use basin::{BoxConstraints, CostFunction};
-use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood_f64};
+use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood};
 use psnailder_tiktak::TikTak;
 
 #[derive(Debug, Clone)]
@@ -377,7 +377,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         for i in 0..new_data.len() {
             new_data[i] = current_perturbation[i] * next_background_arc[i];
         }
-        let quality = ln_likelihood_f64(&self.initial_density, &new_data, &self.mask);
+        let quality = ln_likelihood(&self.initial_density, &new_data, &self.mask);
 
         if self.best_quality > quality {
             self.converged = self.best_model.is_some();
