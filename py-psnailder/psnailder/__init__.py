@@ -70,7 +70,7 @@ def _main() -> None:
     y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     x_mesh, y_mesh = np.meshgrid(x_centres, y_centres)
 
-    num_particles: int = 50_000
+    num_particles: int = 100_000
     print(f"Sampling {num_particles} particles...")
     particles = mock_model.mock_particles(num_particles, x_edges, y_edges, seed=1)
     z_samples = particles.x
