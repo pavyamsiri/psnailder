@@ -16,7 +16,7 @@ pub fn ln_likelihood(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
 /// This function assumes that `data`, `prediction` and `mask` have the same length
 /// and will panic if this is not true.
 #[must_use]
-fn ln_likelihood_naive(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
+pub fn ln_likelihood_naive(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
     assert_eq!(
         data.len(),
         prediction.len(),
@@ -47,7 +47,7 @@ fn ln_likelihood_naive(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
 /// This function assumes that `data`, `prediction` and `mask` have the same length
 /// and will panic if this is not true.
 #[must_use]
-fn ln_likelihood_wide(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
+pub fn ln_likelihood_wide(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64 {
     use wide::CmpGt as _;
     use wide::f64x4;
     assert_eq!(

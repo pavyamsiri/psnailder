@@ -5,6 +5,7 @@ members = [
     "crates/psnailder_tiktak",
     "crates/psnailder_fit",
     "crates/psnailder_mock",
+    "crates/psnailder_math",
 ]
 resolver = "3"
 
@@ -29,6 +30,7 @@ wide = "1.4.0"
 
 psnailder_core = { path = "crates/psnailder_core" }
 psnailder_fit = { path = "crates/psnailder_fit" }
+psnailder_math = { path = "crates/psnailder_math" }
 psnailder_mock = { path = "crates/psnailder_mock" }
 psnailder_tiktak = { path = "crates/psnailder_tiktak" }
 

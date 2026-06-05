@@ -965,6 +965,7 @@ dependencies = [
  "assert_float_eq",
  "criterion",
  "itertools 0.14.0",
+ "psnailder_math",
  "rand 0.10.1",
  "wide 1.4.0",
 ]
@@ -980,6 +981,15 @@ dependencies = [
  "psnailder_mock",
  "psnailder_tiktak",
  "rayon",
+]
+
+[[package]]
+name = "psnailder_math"
+version = "0.0.0"
+dependencies = [
+ "assert_float_eq",
+ "criterion",
+ "rand 0.10.1",
 ]
 
 [[package]]

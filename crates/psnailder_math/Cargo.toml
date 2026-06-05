@@ -1,12 +1,9 @@
 [package]
-name = "psnailder_core"
+name = "psnailder_math"
 version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-itertools = { workspace = true }
-wide = { workspace = true }
-psnailder_math = { workspace = true }
 
 [dev-dependencies]
 assert_float_eq = { workspace = true }
@@ -17,5 +14,6 @@ rand = { workspace = true }
 workspace = true
 
 [[bench]]
-name = "likelihood"
+name = "expit"
 harness = false
+

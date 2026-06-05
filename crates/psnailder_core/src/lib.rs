@@ -1,5 +1,5 @@
 /// Routines to calculate the ln likelihood.
-mod likelihood;
+pub mod likelihood;
 
 pub use likelihood::ln_likelihood;
 

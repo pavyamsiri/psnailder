@@ -1,7 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use psnailder_core::ln_likelihood_branchless;
-use psnailder_core::ln_likelihood_naive;
-use psnailder_core::ln_likelihood_wide;
+use psnailder_core::likelihood::ln_likelihood_naive;
+use psnailder_core::likelihood::ln_likelihood_wide;
 use rand::Rng;
 use rand::RngExt;
 use rand::SeedableRng;
@@ -45,12 +44,6 @@ fn bench_likelihood(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("original", size), &size, |b, _| {
             b.iter(|| {
                 ln_likelihood_naive(black_box(&data), black_box(&prediction), black_box(&mask))
-            })
-        });
-
-        group.bench_with_input(BenchmarkId::new("branchless", size), &size, |b, _| {
-            b.iter(|| {
-                ln_likelihood_branchless(black_box(&data), black_box(&prediction), black_box(&mask))
             })
         });
 
