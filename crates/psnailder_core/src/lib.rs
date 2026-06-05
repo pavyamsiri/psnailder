@@ -4,13 +4,18 @@ pub mod likelihood;
 pub use likelihood::ln_likelihood;
 
 use itertools::izip;
+use psnailder_math::expit;
 
 /// Create a sigmoid mask function given a scale for `x` and `y`.
-pub fn create_sigmoid_mask(x_scale: f64, y_scale: f64) -> impl Fn(f64, f64) -> f64 {
+pub fn create_sigmoid_mask(
+    func: impl Fn(f64) -> f64,
+    x_scale: f64,
+    y_scale: f64,
+) -> impl Fn(f64, f64) -> f64 {
     move |x: f64, y: f64| {
         let xs = x / x_scale;
         let ys = y / y_scale;
-        -expit(-(xs.mul_add(xs, ys * ys) - 1.0)) + 1.0
+        -func(-(xs.mul_add(xs, ys * ys) - 1.0)) + 1.0
     }
 }
 
@@ -74,15 +79,6 @@ pub struct PSpiralComponent {
     pub winding: i8,
     /// The flattening scale.
     pub flattening_strength: f64,
-}
-
-/// The logistic sigmoid function defined as
-///
-/// `sigm(x) = 1 / (1 + exp(-x))`
-#[inline]
-#[must_use]
-pub fn expit(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
 }
 
 impl PSpiralComponent {

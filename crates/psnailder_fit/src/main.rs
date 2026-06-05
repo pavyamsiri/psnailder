@@ -1,4 +1,4 @@
-use psnailder_core::{create_sigmoid_mask, PSpiralComponent};
+use psnailder_core::{PSpiralComponent, create_sigmoid_mask};
 use psnailder_fit::{PSpiralFitter, PSpiralFitterND};
 use psnailder_mock::{BackgroundComponent, GaussianComponent, MockModel, SignalComponent};
 
@@ -73,7 +73,7 @@ fn main() {
         smoothing_sigma: 2.0,
     };
 
-    let mask_func = create_sigmoid_mask(1.0, 40.0);
+    let mask_func = create_sigmoid_mask(psnailder_math::expit, 1.0, 40.0);
     let mask: Vec<f64> = mock_result
         .mesh_x
         .iter()

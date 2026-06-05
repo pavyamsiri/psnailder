@@ -1,26 +1,41 @@
 use psnailder_core::PSpiralComponent;
-use rand::RngExt;
+use rand::RngExt as _;
 
+/// An interface representing components of a mock data model.
 pub trait Component {
+    /// Evaluate the component's contribution to either the signal or background given `x` and `y`.
     fn evaluate(&self, x: f64, y: f64) -> f64;
 }
 
+/// Types of signal component.
 pub enum SignalComponent {
+    /// A log spiral component.
     LogSpiral(PSpiralComponent),
+    /// A custom component.
     Custom(Box<dyn Component>),
 }
 
+/// Types of background component.
 pub enum BackgroundComponent {
+    /// A Gaussian background component.
     Gaussian(GaussianComponent),
+    /// A custom component.
     Custom(Box<dyn Component>),
 }
 
+/// A Gaussian component.
 pub struct GaussianComponent {
+    /// The scale of the x coordinate.
     pub x_scale: f64,
+    /// The scale of the y coordinate.
     pub y_scale: f64,
+    /// The amplitude.
     pub amplitude: f64,
+    /// The variance.
     pub variance: f64,
+    /// The centre of the Gaussian in x.
     pub x_offset: f64,
+    /// The centre of the Gaussian in y.
     pub y_offset: f64,
 }
 
@@ -28,7 +43,7 @@ impl Component for GaussianComponent {
     fn evaluate(&self, x: f64, y: f64) -> f64 {
         let xs = (x - self.x_offset) / self.x_scale;
         let ys = (y - self.y_offset) / self.y_scale;
-        let rxy2 = xs * xs + ys * ys;
+        let rxy2 = xs.mul_add(xs, ys * ys);
         self.amplitude * (-0.5 * rxy2 / self.variance).exp()
     }
 }
@@ -57,22 +72,30 @@ impl Component for BackgroundComponent {
     }
 }
 
+/// The mock data in the form of a number count grid.
 pub struct MockGridResult {
+    /// The density values flattened out in row-major order.
     pub density: Vec<f64>,
+    /// The background values flattened out in row-major order.
     pub background: Vec<f64>,
+    /// The x values flattened out in row-major order.
     pub mesh_x: Vec<f64>,
+    /// The y values flattened out in row-major order.
     pub mesh_y: Vec<f64>,
+    /// The number of bins in x.
     pub num_x: usize,
+    /// The number of bins in y.
     pub num_y: usize,
 }
 
+/// The mock data in the form of a collection of points.
 pub struct MockParticlesResult {
+    /// The x coordinates of the particles.
     pub particle_x: Vec<f64>,
+    /// The y coordinates of the particles.
     pub particle_y: Vec<f64>,
-    pub density: Vec<f64>,
-    pub background: Vec<f64>,
-    pub mesh_x: Vec<f64>,
-    pub mesh_y: Vec<f64>,
+    /// The mock data in grid form.
+    pub grid: MockGridResult,
 }
 
 pub struct MockModel {
@@ -333,10 +356,14 @@ impl MockModel {
         MockParticlesResult {
             particle_x,
             particle_y,
-            density,
-            background,
-            mesh_x,
-            mesh_y,
+            grid: MockGridResult {
+                density,
+                background,
+                mesh_x,
+                mesh_y,
+                num_x,
+                num_y,
+            },
         }
     }
 }

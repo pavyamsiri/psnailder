@@ -978,6 +978,7 @@ dependencies = [
  "itertools 0.14.0",
  "ndarray 0.16.1",
  "psnailder_core",
+ "psnailder_math",
  "psnailder_mock",
  "psnailder_tiktak",
  "rayon",
