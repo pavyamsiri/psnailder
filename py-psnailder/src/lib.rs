@@ -1,7 +1,7 @@
 use numpy::{PyArray1, PyReadonlyArray1};
 use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel, Winding};
 use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
-use pyo3::prelude::*;
+use pyo3::{exceptions::PyValueError, prelude::*};
 use statrs::distribution::ContinuousCDF;
 
 #[pyclass]
@@ -19,22 +19,22 @@ impl PSpiralComponent {
         scale_factor: f64,
         rho: f64,
         winding: i8,
-        flattening_strength: Option<f64>,
-    ) -> Self {
-        Self(RustComponent {
+    ) -> PyResult<Self> {
+        let Ok(winding) = winding.try_into() else {
+            return Err(PyValueError::new_err(format!(
+                "winding must be -1 or 1, got {winding}"
+            )));
+        };
+        Ok(Self(RustComponent {
             alpha,
             b_winding: b,
             c_winding: c,
             theta0,
             scale_factor,
             rho,
-            winding: if winding == 1 {
-                Winding::Positive
-            } else {
-                Winding::Negative
-            },
-            flattening_strength: flattening_strength.unwrap_or(0.1),
-        })
+            winding,
+            flattening_strength: 0.1,
+        }))
     }
 
     #[getter]

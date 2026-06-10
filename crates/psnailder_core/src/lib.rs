@@ -2,11 +2,10 @@
 pub mod likelihood;
 
 use core::fmt;
-
-pub use likelihood::ln_likelihood;
-
 use itertools::izip;
 use psnailder_math::expit;
+
+pub use likelihood::ln_likelihood;
 
 /// Helper macro to convert a `usize` to `f64` by doing a checked
 /// conversion through `u32` with an expect message.
@@ -81,6 +80,21 @@ pub enum Winding {
 impl fmt::Display for Winding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", *self as i8)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WindingConversionError;
+
+impl TryFrom<i8> for Winding {
+    type Error = WindingConversionError;
+
+    fn try_from(value: i8) -> Result<Self, Self::Error> {
+        match value {
+            -1 => Ok(Self::Negative),
+            1 => Ok(Self::Positive),
+            _ => Err(WindingConversionError),
+        }
     }
 }
 
