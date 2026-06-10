@@ -1,9 +1,8 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use psnailder_core::likelihood::ln_likelihood_naive;
 use psnailder_core::likelihood::ln_likelihood_wide;
-use rand::Rng;
-use rand::RngExt;
-use rand::SeedableRng;
+use rand::RngExt as _;
+use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
 
 fn make_data(n: usize, zero_fraction: f64, seed: u64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -21,11 +20,11 @@ fn make_data(n: usize, zero_fraction: f64, seed: u64) -> (Vec<f64>, Vec<f64>, Ve
 
     let data: Vec<f64> = prediction
         .iter()
-        .map(|&p| {
-            if p == 0.0 {
+        .map(|&current_prediction| {
+            if current_prediction == 0.0 {
                 0.0
             } else {
-                p * rng.random_range(0.8..1.2)
+                current_prediction * rng.random_range(0.8..1.2)
             }
         })
         .collect();
@@ -35,22 +34,22 @@ fn make_data(n: usize, zero_fraction: f64, seed: u64) -> (Vec<f64>, Vec<f64>, Ve
     (data, prediction, mask)
 }
 
-fn bench_likelihood(c: &mut Criterion) {
-    let mut group = c.benchmark_group("ln_likelihood");
+fn bench_likelihood(crit: &mut Criterion) {
+    let mut group = crit.benchmark_group("ln_likelihood");
 
     for size in [1_000, 10_000, 100_000] {
         let (data, prediction, mask) = make_data(size, 0.05, 42);
 
-        group.bench_with_input(BenchmarkId::new("original", size), &size, |b, _| {
-            b.iter(|| {
+        group.bench_with_input(BenchmarkId::new("original", size), &size, |bench, _| {
+            bench.iter(|| {
                 ln_likelihood_naive(black_box(&data), black_box(&prediction), black_box(&mask))
-            })
+            });
         });
 
-        group.bench_with_input(BenchmarkId::new("wide", size), &size, |b, _| {
-            b.iter(|| {
+        group.bench_with_input(BenchmarkId::new("wide", size), &size, |bench, _| {
+            bench.iter(|| {
                 ln_likelihood_wide(black_box(&data), black_box(&prediction), black_box(&mask))
-            })
+            });
         });
     }
     group.finish();

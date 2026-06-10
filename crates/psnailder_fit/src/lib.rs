@@ -4,7 +4,7 @@
 //! optionally refining the background density iteratively.
 
 use basin::{BoxConstraints, CostFunction};
-use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood};
+use psnailder_core::{PSpiralComponent, PSpiralModel, Winding, ln_likelihood};
 use psnailder_tiktak::TikTak;
 use std::sync::Arc;
 
@@ -23,9 +23,8 @@ struct PSpiralModelProblem<'prob, const NUM_COMPONENTS: u8> {
     x: &'prob [f64],
     /// The y coordinate of each grid point; must be length `num_cells`.
     y: &'prob [f64],
-    /// The winding direction, must only be +1 or -1.
-    // TODO: Create an enum to enforce that this only has two values.
-    winding: i8,
+    /// The winding direction.
+    winding: Winding,
     /// The lower bounds for the parameters; must be length `6 * NUM_COMPONENTS`.
     lb: &'prob Vec<f64>,
     /// The upper bounds for the parameters; must be length `6 * NUM_COMPONENTS`.
@@ -236,7 +235,7 @@ pub struct PSpiralFitterIterative<'a> {
     /// The number of components to fit.
     pub num_components: usize,
     /// The best fitting winding direction.
-    pub best_winding: Option<i8>,
+    pub best_winding: Option<Winding>,
     /// The quality or log-likelihood of the initial fit.
     pub initial_quality: f64,
     /// The quality or log-likelihood of the best fit so far.
@@ -451,6 +450,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
         let mut blurred_background_vec = blurred_background.to_vec();
 
+        // NOTE: Do we need to do this? Normalising might lead to the background
+        // absorbing the perturbation but not sure.
         // Normalise the background
         let next_bg_sum: f64 = blurred_background_vec.iter().sum();
         let density_sum: f64 = self.initial_density.iter().sum();
@@ -533,7 +534,7 @@ impl PSpiralFitter {
         mesh_y: &[f64],
         shape: (usize, usize),
         num_components: Option<usize>,
-        winding: Option<i8>,
+        winding: Option<Winding>,
         improve_background: bool,
     ) -> PSpiralFitterIterative<'a> {
         let actual_num_components = if let Some(n) = num_components {
@@ -632,7 +633,7 @@ impl PSpiralFitterND<6> {
             mask,
             mesh_x,
             mesh_y,
-            1,
+            Winding::Positive,
         );
         let neg_winding = self.fit_spiral_with_background_with_winding(
             initial_density,
@@ -640,7 +641,7 @@ impl PSpiralFitterND<6> {
             mask,
             mesh_x,
             mesh_y,
-            -1,
+            Winding::Negative,
         );
 
         if pos_winding.1 >= neg_winding.1 {
@@ -658,7 +659,7 @@ impl PSpiralFitterND<6> {
         mask: &[f64],
         mesh_x: &[f64],
         mesh_y: &[f64],
-        winding: i8,
+        winding: Winding,
     ) -> (PSpiralComponent, f64) {
         let lb = vec![
             self.alpha_bounds.0,
@@ -731,7 +732,7 @@ impl PSpiralFitterND<12> {
             mask,
             mesh_x,
             mesh_y,
-            1,
+            Winding::Positive,
         );
         let neg_winding = self.fit_spiral_with_background_with_winding(
             initial_density,
@@ -739,7 +740,7 @@ impl PSpiralFitterND<12> {
             mask,
             mesh_x,
             mesh_y,
-            -1,
+            Winding::Negative,
         );
 
         if pos_winding.2 >= neg_winding.2 {
@@ -757,7 +758,7 @@ impl PSpiralFitterND<12> {
         mask: &[f64],
         mesh_x: &[f64],
         mesh_y: &[f64],
-        winding: i8,
+        winding: Winding,
     ) -> (PSpiralComponent, PSpiralComponent, f64) {
         let lb = vec![
             self.alpha_bounds.0,

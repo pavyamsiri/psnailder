@@ -1,5 +1,5 @@
 use numpy::{PyArray1, PyReadonlyArray1};
-use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
+use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel, Winding};
 use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
 use pyo3::prelude::*;
 use statrs::distribution::ContinuousCDF;
@@ -28,7 +28,11 @@ impl PSpiralComponent {
             theta0,
             scale_factor,
             rho,
-            winding,
+            winding: if winding == 1 {
+                Winding::Positive
+            } else {
+                Winding::Negative
+            },
             flattening_strength: flattening_strength.unwrap_or(0.1),
         })
     }
@@ -59,7 +63,7 @@ impl PSpiralComponent {
     }
     #[getter]
     fn winding(&self) -> i8 {
-        self.0.winding
+        self.0.winding as i8
     }
 
     pub fn perturbation<'py>(

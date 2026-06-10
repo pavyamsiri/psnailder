@@ -1,3 +1,4 @@
+use psnailder_core::Winding;
 use psnailder_core::{PSpiralComponent, create_sigmoid_mask};
 use psnailder_fit::{PSpiralFitter, PSpiralFitterND};
 use psnailder_mock::{BackgroundComponent, GaussianComponent, MockModel, SignalComponent};
@@ -17,7 +18,7 @@ fn main() {
                 theta0: -core::f64::consts::FRAC_PI_2,
                 scale_factor: 40.0,
                 rho: 0.09,
-                winding: -1,
+                winding: Winding::Negative,
                 flattening_strength: 0.1,
             }),
             SignalComponent::LogSpiral(PSpiralComponent {
@@ -27,7 +28,7 @@ fn main() {
                 theta0: core::f64::consts::FRAC_PI_2,
                 scale_factor: 40.0,
                 rho: 0.09,
-                winding: -1,
+                winding: Winding::Negative,
                 flattening_strength: 0.1,
             }),
         ],

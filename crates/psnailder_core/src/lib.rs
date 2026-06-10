@@ -1,6 +1,8 @@
 /// Routines to calculate the ln likelihood.
 pub mod likelihood;
 
+use core::fmt;
+
 pub use likelihood::ln_likelihood;
 
 use itertools::izip;
@@ -66,6 +68,28 @@ impl PSpiralModel {
     }
 }
 
+/// Represents the spiral winding direction.
+#[derive(Debug, Clone, Copy)]
+#[repr(i8)]
+pub enum Winding {
+    /// Positive winding.
+    Positive = 1,
+    /// Negative winding.
+    Negative = -1,
+}
+
+impl fmt::Display for Winding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", *self as i8)
+    }
+}
+
+impl From<Winding> for f64 {
+    fn from(value: Winding) -> Self {
+        f64::from(value as i8)
+    }
+}
+
 /// A single spiral component.
 ///
 /// The shape of the spiral is a log spiral with linear winding
@@ -85,7 +109,7 @@ pub struct PSpiralComponent {
     /// The flattening radius.
     pub rho: f64,
     /// The winding direction.
-    pub winding: i8,
+    pub winding: Winding,
     /// The flattening scale.
     pub flattening_strength: f64,
 }

@@ -1,4 +1,5 @@
 use psnailder_core::PSpiralComponent;
+use psnailder_core::Winding;
 use psnailder_core::usize_to_f64;
 use psnailder_mock::{
     BackgroundComponent, GaussianComponent, MockGridResult, MockModel, SignalComponent,
@@ -59,7 +60,7 @@ fn main() {
             theta0: 0.0,
             scale_factor: 40.0,
             rho: 0.09,
-            winding: 1,
+            winding: Winding::Positive,
             flattening_strength: 0.1,
         })],
         vec![BackgroundComponent::Gaussian(GaussianComponent {
