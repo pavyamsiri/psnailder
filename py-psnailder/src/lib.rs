@@ -23,8 +23,8 @@ impl PSpiralComponent {
     ) -> Self {
         Self(RustComponent {
             alpha,
-            b,
-            c,
+            b_winding: b,
+            c_winding: c,
             theta0,
             scale_factor,
             rho,
@@ -39,11 +39,11 @@ impl PSpiralComponent {
     }
     #[getter]
     fn b(&self) -> f64 {
-        self.0.b
+        self.0.b_winding
     }
     #[getter]
     fn c(&self) -> f64 {
-        self.0.c
+        self.0.c_winding
     }
     #[getter]
     fn theta0(&self) -> f64 {
@@ -79,8 +79,8 @@ impl PSpiralComponent {
         format!(
             "PSpiralComponent(alpha={:.4}, b={:.4}, c={:.4}, theta0={:.4}, scale_factor={:.4}, rho={:.4}, winding={})",
             self.0.alpha,
-            self.0.b,
-            self.0.c,
+            self.0.b_winding,
+            self.0.c_winding,
             self.0.theta0,
             self.0.scale_factor,
             self.0.rho,
