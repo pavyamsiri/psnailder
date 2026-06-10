@@ -12,8 +12,8 @@ fn main() {
         vec![
             SignalComponent::LogSpiral(PSpiralComponent {
                 alpha: 0.5,
-                b: 0.05,
-                c: 0.002,
+                b_winding: 0.05,
+                c_winding: 0.002,
                 theta0: -core::f64::consts::FRAC_PI_2,
                 scale_factor: 40.0,
                 rho: 0.09,
@@ -22,8 +22,8 @@ fn main() {
             }),
             SignalComponent::LogSpiral(PSpiralComponent {
                 alpha: 0.5,
-                b: 0.05,
-                c: 0.002,
+                b_winding: 0.05,
+                c_winding: 0.002,
                 theta0: core::f64::consts::FRAC_PI_2,
                 scale_factor: 40.0,
                 rho: 0.09,

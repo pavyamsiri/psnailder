@@ -24,8 +24,8 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp = PSpiralComponent {
             alpha: param[0],
-            b: param[1],
-            c: param[2],
+            b_winding: param[1],
+            c_winding: param[2],
             theta0: param[3],
             scale_factor: param[4],
             rho: param[5],
@@ -58,8 +58,8 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp1 = PSpiralComponent {
             alpha: param[0],
-            b: param[1],
-            c: param[2],
+            b_winding: param[1],
+            c_winding: param[2],
             theta0: param[3],
             scale_factor: param[4],
             rho: param[5],
@@ -68,8 +68,8 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
         };
         let comp2 = PSpiralComponent {
             alpha: param[6],
-            b: param[7],
-            c: param[8],
+            b_winding: param[7],
+            c_winding: param[8],
             theta0: param[9],
             scale_factor: param[10],
             rho: param[11],
@@ -594,8 +594,8 @@ impl PSpiralFitterND<6> {
 
         let best_model = PSpiralComponent {
             alpha: res.params[0],
-            b: res.params[1],
-            c: res.params[2],
+            b_winding: res.params[1],
+            c_winding: res.params[2],
             theta0: res.params[3],
             scale_factor: res.params[4],
             rho: res.params[5],
@@ -709,8 +709,8 @@ impl PSpiralFitterND<12> {
 
         let comp1 = PSpiralComponent {
             alpha: res.params[0],
-            b: res.params[1],
-            c: res.params[2],
+            b_winding: res.params[1],
+            c_winding: res.params[2],
             theta0: res.params[3],
             scale_factor: res.params[4],
             rho: res.params[5],
@@ -719,8 +719,8 @@ impl PSpiralFitterND<12> {
         };
         let comp2 = PSpiralComponent {
             alpha: res.params[6],
-            b: res.params[7],
-            c: res.params[8],
+            b_winding: res.params[7],
+            c_winding: res.params[8],
             theta0: res.params[9],
             scale_factor: res.params[10],
             rho: res.params[11],
