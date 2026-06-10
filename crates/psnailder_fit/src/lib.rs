@@ -1,18 +1,34 @@
-use std::sync::Arc;
+//! Fitting logic for phase spiral models.
+//!
+//! This crate provides tools for fitting one or two-component phase spiral models to 2D density data,
+//! optionally refining the background density iteratively.
 
 use basin::{BoxConstraints, CostFunction};
 use psnailder_core::{PSpiralComponent, PSpiralModel, ln_likelihood};
 use psnailder_tiktak::TikTak;
+use std::sync::Arc;
 
+/// A `basin` problem to optimise to find the best parameters for the phase spiral model.
+///
+/// `NUM_COMPONENTS` is a const generic that defines the number of component arms to solve for.
 #[derive(Debug, Clone)]
 struct PSpiralModelProblem<'prob, const NUM_COMPONENTS: u8> {
+    /// The density grid; must be length `num_cells`.
     data: &'prob [f64],
+    /// The estimated background grid; must be length `num_cells`.
     background: &'prob [f64],
+    /// The corresponding mask; must be length `num_cells`.
     mask: &'prob [f64],
+    /// The x coordinate of each grid point; must be length `num_cells`.
     x: &'prob [f64],
+    /// The y coordinate of each grid point; must be length `num_cells`.
     y: &'prob [f64],
+    /// The winding direction, must only be +1 or -1.
+    // TODO: Create an enum to enforce that this only has two values.
     winding: i8,
+    /// The lower bounds for the parameters; must be length `6 * NUM_COMPONENTS`.
     lb: &'prob Vec<f64>,
+    /// The upper bounds for the parameters; must be length `6 * NUM_COMPONENTS`.
     ub: &'prob Vec<f64>,
 }
 
@@ -115,13 +131,24 @@ impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 2> {
     }
 }
 
+/// A fitter for phase spiral models with a fixed number of parameters.
+///
+/// This struct manages the optimization process for a specific dimensionality `N`,
+/// which typically corresponds to the number of components multiplied by the six parameters for a single spiral component.
 pub struct PSpiralFitterND<const N: usize> {
+    /// The global optimization engine.
     pub tiktak: TikTak<N>,
+    /// The bounds for `alpha`.
     pub alpha_bounds: (f64, f64),
+    /// The bounds for `b`.
     pub b_bounds: (f64, f64),
+    /// The bounds for `c`.
     pub c_bounds: (f64, f64),
+    /// The bounds for `theta0`.
     pub theta0_bounds: (f64, f64),
+    /// The bounds for `scale_factor`.
     pub scale_factor_bounds: (f64, f64),
+    /// The bounds for `rho`.
     pub rho_bounds: (f64, f64),
 }
 
@@ -145,53 +172,100 @@ impl<const N: usize> Clone for PSpiralFitterND<N> {
     }
 }
 
+type OneArmFitter = PSpiralFitterND<6>;
+type TwoArmFitter = PSpiralFitterND<12>;
+
+/// A high-level fitter that supports single and double component models with iterative background refinement.
 #[derive(Clone)]
 pub struct PSpiralFitter {
-    pub fitter_single: PSpiralFitterND<6>,
-    pub fitter_double: PSpiralFitterND<12>,
+    /// Fitter used for one-arm models.
+    pub fitter_single: OneArmFitter,
+    /// Fitter used for two-arm models.
+    pub fitter_double: TwoArmFitter,
+    /// Maximum number of iterations for background refinement.
     pub max_iterations: Option<usize>,
+    /// Sigma for Gaussian smoothing applied to the background during refinement.
     pub smoothing_sigma: f64,
 }
 
+/// The results of a spiral model fit.
 #[derive(Debug, Clone)]
 pub struct PSpiralFitResult {
+    /// The original input density data.
     pub data: Arc<[f64]>,
+    /// The model obtained after the first optimization step.
     pub initial_model: PSpiralModel,
+    /// The initial background provided to the fitter.
     pub initial_background: Arc<[f64]>,
+    /// The final optimized model.
     pub final_model: PSpiralModel,
+    /// The final refined background.
     pub final_background: Arc<[f64]>,
+    /// Number of iterations performed.
     pub num_iterations: usize,
+    /// Maximum allowed iterations if set otherwise none.
     pub max_iterations: Option<usize>,
+    /// Whether the background refinement converged.
     pub converged: bool,
+    /// The log-likelihood of the initial fit.
     pub initial_lnl: f64,
+    /// The log-likelihood of the final fit.
     pub final_lnl: f64,
 }
 
+/// An iterator that performs the fitting process step-by-step.
+///
+/// This allows for inspecting intermediate results or customizing the refinement loop.
 pub struct PSpiralFitterIterative<'a> {
+    /// The composite one and two arm spiral fitter.
     pub fitter: &'a PSpiralFitter,
+    /// The initial density grid.
     pub initial_density: Arc<[f64]>,
+    /// The initial estimated background grid.
     pub initial_background: Arc<[f64]>,
+    /// The current estimated background grid.
     pub current_background: Arc<[f64]>,
+    /// The mask used to evaluate quality.
     pub mask: Arc<[f64]>,
+    /// The x coordinate at each grid point.
     pub mesh_x: Arc<[f64]>,
+    /// The y coordinate at each grid point.
     pub mesh_y: Arc<[f64]>,
+    /// The shape of the grid in row-major order.
     pub shape: (usize, usize),
+    /// The number of components to fit.
     pub num_components: usize,
+    /// The best fitting winding direction.
     pub best_winding: Option<i8>,
+    /// The quality or log-likelihood of the initial fit.
     pub initial_quality: f64,
+    /// The quality or log-likelihood of the best fit so far.
     pub best_quality: f64,
+    /// The model of the best fit so far.
     pub best_model: Option<PSpiralModel>,
+    /// The model of the initial fit.
     pub initial_model: Option<PSpiralModel>,
+    /// The current iteration index.
     pub iteration_index: usize,
+    /// The maximum number of iterations if given otherwise none signifies no limit.
     pub max_iterations: Option<usize>,
+    /// Whether the background refinement process has converged.
     pub converged: bool,
+    /// The sigma used when smoothing the background during the refinement process.
     pub smoothing_sigma: f64,
+    /// Whether to perform iterative background refinement.
     pub improve_background: bool,
+    /// Whether the refinement process has terminated.
     pub is_finished: bool,
 }
 
+/// Perform a Gaussian blur in 2D on the given data.
+#[must_use]
 fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64]> {
     let (rows, cols) = shape;
+    let num_cells = rows * cols;
+    assert_eq!(data.len(), num_cells, "`data` must equal `num_cells`.");
+
     if sigma <= 0.0 {
         return Arc::from(data);
     }
@@ -244,10 +318,12 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
     type Item = PSpiralFitResult;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Fitting is done so quit.
         if self.is_finished {
             return None;
         }
 
+        // We ran out of allowed iterations.
         if let Some(max_iter) = self.max_iterations
             && self.iteration_index >= max_iter
         {
@@ -255,11 +331,13 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             return None;
         }
 
+        // Update the iteration index.
         self.iteration_index += 1;
 
-        // 1. Optimize parameters
+        // Optimize parameters.
         let (current_model, ll) = match self.num_components {
             1 => {
+                // Use the winding from a previous iteration or the given one.
                 let (comp, ll) = if let Some(w) = self.best_winding {
                     self.fitter
                         .fitter_single
@@ -271,7 +349,9 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                             &self.mesh_y,
                             w,
                         )
-                } else {
+                }
+                // Determine the best winding by performing both fits.
+                else {
                     let (comp, ll) = self.fitter.fitter_single.fit_spiral_with_background(
                         &self.initial_density,
                         &self.current_background,
@@ -290,6 +370,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                 )
             }
             2 => {
+                // Use the winding from a previous iteration or the given one.
                 let (comp1, comp2, ll) = if let Some(w) = self.best_winding {
                     self.fitter
                         .fitter_double
@@ -301,7 +382,9 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                             &self.mesh_y,
                             w,
                         )
-                } else {
+                }
+                // Determine the best winding by performing both fits.
+                else {
                     let (c1, c2, ll) = self.fitter.fitter_double.fit_spiral_with_background(
                         &self.initial_density,
                         &self.current_background,
@@ -319,16 +402,17 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
                     ll,
                 )
             }
-            _ => panic!("Unsupported num_components"),
+            _ => panic!("Unsupported `num_components`"),
         };
 
-        // 2. Set initial model
+        // Set initial model if this is the first iteration.
         if self.initial_model.is_none() {
             self.initial_model = Some(current_model.clone());
             self.best_quality = ll;
             self.initial_quality = ll;
         }
 
+        // If we aren't performing background refinement then we return here.
         if !self.improve_background {
             self.best_model = Some(current_model.clone());
             self.converged = true;
@@ -347,10 +431,14 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             });
         }
 
-        // 3. Update background
+        // Update background by the relation
+        // ``new_background = smooth(data / pertubation)``
+
+        // Calculate the perturbation
         let mut current_perturbation = vec![0.0; self.initial_density.len()];
         current_model.perturbation_vec(&self.mesh_x, &self.mesh_y, &mut current_perturbation);
 
+        // Unsmoothed background
         let next_background: Vec<f64> = self
             .initial_density
             .iter()
@@ -358,10 +446,12 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             .map(|(d, p)| d / p.max(1e-10))
             .collect();
 
+        // Smoothed background
         let blurred_background =
             gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
         let mut blurred_background_vec = blurred_background.to_vec();
 
+        // Normalise the background
         let next_bg_sum: f64 = blurred_background_vec.iter().sum();
         let density_sum: f64 = self.initial_density.iter().sum();
         if next_bg_sum > 0.0 {
@@ -372,14 +462,16 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         }
         let next_background_arc: Arc<[f64]> = Arc::from(blurred_background_vec);
 
-        // 4. Check quality
+        // Check quality
         let mut new_data = vec![0.0; self.initial_density.len()];
         for i in 0..new_data.len() {
             new_data[i] = current_perturbation[i] * next_background_arc[i];
         }
         let quality = ln_likelihood(&self.initial_density, &new_data, &self.mask);
 
+        // The new background provides a worse fit so we are done with refinement.
         if self.best_quality > quality {
+            // We only converge if the best fitting model (and hence background) was not the initial fit.
             self.converged = self.best_model.is_some();
             if self.best_model.is_none() {
                 self.best_model = self.initial_model.clone();
@@ -399,6 +491,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             });
         }
 
+        // Update the quality, background and model.
         self.best_quality = quality;
         self.current_background = next_background_arc;
         self.best_model = Some(current_model.clone());
@@ -419,6 +512,18 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
 }
 
 impl PSpiralFitter {
+    /// Creates an iterative fitter for refining both the spiral model and the background.
+    ///
+    /// # Arguments
+    /// * `initial_density` - The observed density data.
+    /// * `initial_background` - Initial guess for the background density.
+    /// * `mask` - Mask for valid data points (1.0 for valid, 0.0 for invalid).
+    /// * `mesh_x` - X-coordinates of the data points.
+    /// * `mesh_y` - Y-coordinates of the data points.
+    /// * `shape` - Dimensions of the 2D grid (rows, cols).
+    /// * `num_components` - Optional override for the number of components (1 or 2). If None, BIC is used.
+    /// * `winding` - Optional fixed winding direction (1 for CW, -1 for CCW).
+    /// * `improve_background` - Whether to perform iterative background refinement.
     pub fn fit_spiral_with_background_iterative<'a>(
         &'a self,
         initial_density: &[f64],
@@ -481,6 +586,7 @@ impl PSpiralFitter {
         }
     }
 
+    /// Fits a spiral model with background refinement and returns the final result.
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -511,6 +617,7 @@ impl PSpiralFitter {
 }
 
 impl PSpiralFitterND<6> {
+    /// Fits a single-component spiral model, trying both winding directions.
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -543,6 +650,7 @@ impl PSpiralFitterND<6> {
         }
     }
 
+    /// Fits a single-component spiral model with a fixed winding direction.
     pub fn fit_spiral_with_background_with_winding(
         &self,
         initial_density: &[f64],
@@ -608,6 +716,7 @@ impl PSpiralFitterND<6> {
 }
 
 impl PSpiralFitterND<12> {
+    /// Fits a two-component spiral model, trying both winding directions.
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -640,6 +749,7 @@ impl PSpiralFitterND<12> {
         }
     }
 
+    /// Fits a two-component spiral model with a fixed winding direction.
     pub fn fit_spiral_with_background_with_winding(
         &self,
         initial_density: &[f64],
