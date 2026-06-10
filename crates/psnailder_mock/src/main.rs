@@ -1,16 +1,24 @@
 use psnailder_core::PSpiralComponent;
+use psnailder_core::usize_to_f64;
 use psnailder_mock::{
     BackgroundComponent, GaussianComponent, MockGridResult, MockModel, SignalComponent,
 };
 
 fn linspace(start: f64, end: f64, n: usize) -> Vec<f64> {
-    let step = (end - start) / (n - 1) as f64;
-    (0..n).map(|i| start + i as f64 * step).collect()
+    let nf = usize_to_f64!(n, "`n` must fit inside `f64`.");
+    let step = (end - start) / (nf - 1.0);
+    (0..n)
+        .map(|i| {
+            let i_f = usize_to_f64!(i, "`i` should fit in a `u32`.");
+            i_f.mul_add(step, start)
+        })
+        .collect()
 }
 
 fn print_grid(grid: &MockGridResult) {
-    let fmt = |v: &[f64]| {
-        v.iter()
+    let fmt = |values: &[f64]| {
+        values
+            .iter()
             .map(|x| format!("{x:.6}"))
             .collect::<Vec<_>>()
             .join(", ")
@@ -46,8 +54,8 @@ fn main() {
     let model = MockModel::new(
         vec![SignalComponent::LogSpiral(PSpiralComponent {
             alpha: 0.5,
-            b: 0.05,
-            c: 0.002,
+            b_winding: 0.05,
+            c_winding: 0.002,
             theta0: 0.0,
             scale_factor: 40.0,
             rho: 0.09,
@@ -63,10 +71,10 @@ fn main() {
             y_offset: 0.0,
         })],
     );
-    let num_x_bins = 1000;
-    let num_y_bins = 1000;
-    let x_edges = linspace(-1.2, 1.2, num_x_bins + 1);
-    let y_edges = linspace(-60.0, 60.0, num_y_bins + 1);
+    let x_bins = 1000;
+    let y_bins = 1000;
+    let x_edges = linspace(-1.2, 1.2, x_bins + 1);
+    let y_edges = linspace(-60.0, 60.0, y_bins + 1);
     let mock_result = model.mock_grid(&x_edges, &y_edges, 1_000_000);
 
     print_grid(&mock_result);

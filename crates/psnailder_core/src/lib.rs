@@ -6,6 +6,15 @@ pub use likelihood::ln_likelihood;
 use itertools::izip;
 use psnailder_math::expit;
 
+/// Helper macro to convert a `usize` to `f64` by doing a checked
+/// conversion through `u32` with an expect message.
+#[macro_export]
+macro_rules! usize_to_f64 {
+    ($val:expr, $msg:literal) => {
+        f64::from(u32::try_from($val).expect($msg))
+    };
+}
+
 /// Create a sigmoid mask function given a scale for `x` and `y`.
 pub fn create_sigmoid_mask(
     func: impl Fn(f64) -> f64,
@@ -66,9 +75,9 @@ pub struct PSpiralComponent {
     /// The perturbation strength.
     pub alpha: f64,
     /// The linear winding parameter.
-    pub b: f64,
+    pub b_winding: f64,
     /// The quadratic winding parameter.
-    pub c: f64,
+    pub c_winding: f64,
     /// The angle offset.
     pub theta0: f64,
     /// The scale factor relating `vz` and `z`.
@@ -88,8 +97,8 @@ impl PSpiralComponent {
     #[inline]
     #[must_use]
     pub fn spiral_phase(&self, radius: f64) -> f64 {
-        let abs_c = self.c.abs();
-        let abs_b = self.b.abs();
+        let abs_c = self.c_winding.abs();
+        let abs_b = self.b_winding.abs();
         if abs_c > 1e-10 {
             let half_b_over_c = 0.5 * abs_b / abs_c;
             -half_b_over_c + half_b_over_c.mul_add(half_b_over_c, radius / abs_c).sqrt()
