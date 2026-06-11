@@ -12,3 +12,6 @@ psnailder_core = { workspace = true }
 psnailder_math = { workspace = true }
 psnailder_mock = { workspace = true }
 psnailder_tiktak = { workspace = true }
+
+[lints]
+workspace = true

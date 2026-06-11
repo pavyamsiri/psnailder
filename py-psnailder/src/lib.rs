@@ -1,10 +1,10 @@
 use numpy::{PyArray1, PyReadonlyArray1};
-use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel, Winding};
+use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
 use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
 use pyo3::{exceptions::PyValueError, prelude::*};
 use statrs::distribution::ContinuousCDF;
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PSpiralComponent(pub RustComponent);
 
@@ -93,7 +93,7 @@ impl PSpiralComponent {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PSpiralModel(pub RustModel);
 
@@ -226,6 +226,10 @@ impl PSpiralFitter {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "API would be overly complicated in order to reduce number of arguments."
+    )]
     pub fn fit_spiral_with_background<'py>(
         &self,
         py: Python<'py>,
