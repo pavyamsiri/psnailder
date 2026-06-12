@@ -275,11 +275,14 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
 
     let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
     let mut kernel = vec![0.0; kernel_size];
-    let half_size = (kernel_size / 2) as i32;
+    let half_size: i32 = (kernel_size / 2)
+        .try_into()
+        .expect("the kernel size will not exceed twice the limit of i32.");
     let s2 = 2.0 * sigma * sigma;
     let mut sum = 0.0;
     for (i, kk) in kernel.iter_mut().enumerate() {
-        let x = (i as i32 - half_size) as f64;
+        let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+        let x = f64::from(idx_i32 - half_size);
         *kk = (-x * x / s2).exp();
         sum += *kk;
     }
@@ -291,33 +294,47 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
     let mut temp = ndarray::Array2::zeros(shape);
 
     // Horizontal pass
-    for r in 0..rows {
-        for c in 0..cols {
+    let max_col_idx: i32 = cols
+        .try_into()
+        .expect("the number of columns will not exceed i32.");
+    for row_idx in 0..rows {
+        for col_idx in 0..cols {
+            let col_idx_i32: i32 = col_idx
+                .try_into()
+                .expect("the column index will not exceed i32.");
             let mut val = 0.0;
             for (i, kk) in kernel.iter().enumerate() {
-                let cc = (c as i32 + i as i32 - half_size).clamp(0, cols as i32 - 1) as usize;
-                val += out[[r, cc]] * kk;
+                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+                let cc = (col_idx_i32 + idx_i32 - half_size).clamp(0, max_col_idx - 1) as usize;
+                val += out[[row_idx, cc]] * kk;
             }
-            temp[[r, c]] = val;
+            temp[[row_idx, col_idx]] = val;
         }
     }
 
     // Vertical pass
-    for r in 0..rows {
-        for c in 0..cols {
+    let max_row_idx: i32 = rows
+        .try_into()
+        .expect("the number of rows will not exceed i32.");
+    for row_idx in 0..rows {
+        let row_idx_i32: i32 = row_idx
+            .try_into()
+            .expect("the row index will not exceed i32.");
+        for col_idx in 0..cols {
             let mut val = 0.0;
             for (i, kk) in kernel.iter().enumerate() {
-                let rr = (r as i32 + i as i32 - half_size).clamp(0, rows as i32 - 1) as usize;
-                val += temp[[rr, c]] * kk;
+                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+                let rr = (row_idx_i32 + idx_i32 - half_size).clamp(0, max_row_idx - 1) as usize;
+                val += temp[[rr, col_idx]] * kk;
             }
-            out[[r, c]] = val;
+            out[[row_idx, col_idx]] = val;
         }
     }
 
     Arc::from(out.into_raw_vec_and_offset().0)
 }
 
-impl<'a> Iterator for PSpiralFitterIterative<'a> {
+impl Iterator for PSpiralFitterIterative<'_> {
     type Item = PSpiralFitResult;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -417,7 +434,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
 
         // If we aren't performing background refinement then we return here.
         if !self.improve_background {
-            self.best_model = Some(current_model.clone());
+            self.best_model = Some(current_model);
             self.converged = true;
             self.is_finished = true;
             return Some(PSpiralFitResult {
@@ -446,7 +463,7 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
             .initial_density
             .iter()
             .zip(current_perturbation.iter())
-            .map(|(d, p)| d / p.max(1e-10))
+            .map(|(current_data, current_pert)| current_data / current_pert.max(1e-10))
             .collect();
 
         // Smoothed background
@@ -461,8 +478,8 @@ impl<'a> Iterator for PSpiralFitterIterative<'a> {
         let density_sum: f64 = self.initial_density.iter().sum();
         if next_bg_sum > 0.0 {
             let scale = density_sum / next_bg_sum;
-            for b in blurred_background_vec.iter_mut() {
-                *b *= scale;
+            for current_background in blurred_background_vec.iter_mut() {
+                *current_background *= scale;
             }
         }
         let next_background_arc: Arc<[f64]> = Arc::from(blurred_background_vec);
@@ -529,8 +546,9 @@ impl PSpiralFitter {
     /// * `num_components` - Optional override for the number of components (1 or 2). If None, BIC is used.
     /// * `winding` - Optional fixed winding direction (1 for CW, -1 for CCW).
     /// * `improve_background` - Whether to perform iterative background refinement.
-    pub fn fit_spiral_with_background_iterative<'a>(
-        &'a self,
+    #[must_use]
+    pub fn fit_spiral_with_background_iterative<'fit>(
+        &'fit self,
         initial_density: &[f64],
         initial_background: &[f64],
         mask: &[f64],
@@ -540,7 +558,7 @@ impl PSpiralFitter {
         num_components: Option<usize>,
         winding: Option<Winding>,
         improve_background: bool,
-    ) -> PSpiralFitterIterative<'a> {
+    ) -> PSpiralFitterIterative<'fit> {
         let actual_num_components = if let Some(n) = num_components {
             n
         } else {
@@ -561,8 +579,8 @@ impl PSpiralFitter {
             );
 
             let ln_norm = initial_density.iter().sum::<f64>().ln();
-            let bic_single = ln_norm * 6.0 - 2.0 * ll_single;
-            let bic_double = ln_norm * 12.0 - 2.0 * ll_double;
+            let bic_single = ln_norm.mul_add(6.0, -2.0 * ll_single);
+            let bic_double = ln_norm.mul_add(12.0, -2.0 * ll_double);
 
             if bic_double < bic_single { 2 } else { 1 }
         };
@@ -592,6 +610,7 @@ impl PSpiralFitter {
     }
 
     /// Fits a spiral model with background refinement and returns the final result.
+    #[must_use]
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -623,6 +642,7 @@ impl PSpiralFitter {
 
 impl PSpiralFitterND<6> {
     /// Fits a single-component spiral model, trying both winding directions.
+    #[must_use]
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -656,6 +676,7 @@ impl PSpiralFitterND<6> {
     }
 
     /// Fits a single-component spiral model with a fixed winding direction.
+    #[must_use]
     pub fn fit_spiral_with_background_with_winding(
         &self,
         initial_density: &[f64],
@@ -722,6 +743,7 @@ impl PSpiralFitterND<6> {
 
 impl PSpiralFitterND<12> {
     /// Fits a two-component spiral model, trying both winding directions.
+    #[must_use]
     pub fn fit_spiral_with_background(
         &self,
         initial_density: &[f64],
@@ -755,6 +777,7 @@ impl PSpiralFitterND<12> {
     }
 
     /// Fits a two-component spiral model with a fixed winding direction.
+    #[must_use]
     pub fn fit_spiral_with_background_with_winding(
         &self,
         initial_density: &[f64],
