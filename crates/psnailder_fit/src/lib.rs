@@ -559,9 +559,7 @@ impl PSpiralFitter {
         winding: Option<Winding>,
         improve_background: bool,
     ) -> PSpiralFitterIterative<'fit> {
-        let actual_num_components = if let Some(n) = num_components {
-            n
-        } else {
+        let actual_num_components = num_components.unwrap_or_else(|| {
             // AIC comparison
             let (_, ll_single) = self.fitter_single.fit_spiral_with_background(
                 initial_density,
@@ -583,7 +581,7 @@ impl PSpiralFitter {
             let bic_double = ln_norm.mul_add(12.0, -2.0 * ll_double);
 
             if bic_double < bic_single { 2 } else { 1 }
-        };
+        });
 
         PSpiralFitterIterative {
             fitter: self,

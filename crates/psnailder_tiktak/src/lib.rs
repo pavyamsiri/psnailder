@@ -135,10 +135,11 @@ impl<const N: usize> TikTak<N> {
     /// Minimize a cost function using the `TikTak` global optimizer.
     ///
     /// # Errors
-    /// TODO
+    /// This function fails if the cost function does not succeed in at least one evaluation.
     ///
     /// # Panics
-    /// TODO
+    /// This function can panic if the number of kept points is not equal to the intended number of
+    /// kept points.
     pub fn minimize<C>(
         &self,
         cost_func: &C,
@@ -189,7 +190,11 @@ impl<const N: usize> TikTak<N> {
 
         let best_points = heap.into_sorted_vec();
 
-        let global_best_param: Vec<f64> = best_points.first().unwrap().point.clone();
+        let global_best_param: Vec<f64> = best_points
+            .first()
+            .expect("the number of kept points is at least 1.")
+            .point
+            .clone();
 
         let mut solutions = best_points
             .into_par_iter()
@@ -205,7 +210,7 @@ impl<const N: usize> TikTak<N> {
                     .iter()
                     .zip(global_best_param.iter())
                     .map(|(current_param, best_param)| {
-                        (1.0 - weight) * current_param + weight * best_param
+                        current_param.mul_add(1.0 - weight, weight * best_param)
                     })
                     .collect();
 
@@ -229,10 +234,18 @@ impl<const N: usize> TikTak<N> {
             })
             .collect::<Vec<(f64, Vec<f64>, u64)>>();
 
-        solutions.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap());
+        solutions.sort_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .expect("there should be no NaNs.")
+        });
 
-        let nfev = solutions.iter().map(|(_, _, nfev)| nfev).sum::<u64>() + self.num_samples as u64;
-        let (global_best_cost, actual_global_best_param, _) = solutions.first().unwrap();
+        let nfev = solutions.iter().map(|(_, _, nfev)| nfev).sum::<u64>()
+            + u64::try_from(self.num_samples)
+                .expect("the number of samples will never exceed 2^16.");
+        let (global_best_cost, actual_global_best_param, _) = solutions
+            .first()
+            .expect("the number of solutions will at least be 1.");
 
         Ok(OptimizationResult {
             params: actual_global_best_param.to_owned(),
