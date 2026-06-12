@@ -3,10 +3,14 @@
 //! This crate provides tools for fitting one or two-component phase spiral models to 2D density data,
 //! optionally refining the background density iteratively.
 
+extern crate alloc;
+
+use core::convert;
+
+use alloc::sync::Arc;
 use basin::{BoxConstraints, CostFunction};
 use psnailder_core::{PSpiralComponent, PSpiralModel, Winding, ln_likelihood};
 use psnailder_tiktak::TikTak;
-use std::sync::Arc;
 
 /// A `basin` problem to optimise to find the best parameters for the phase spiral model.
 ///
@@ -31,10 +35,10 @@ struct PSpiralModelProblem<'prob, const NUM_COMPONENTS: u8> {
     ub: &'prob Vec<f64>,
 }
 
-impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
+impl CostFunction for PSpiralModelProblem<'_, 1> {
     type Param = Vec<f64>;
     type Output = f64;
-    type Error = core::convert::Infallible;
+    type Error = convert::Infallible;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp = PSpiralComponent {
@@ -49,13 +53,13 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
         };
 
         let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
-            .map(|(d, x, y, bg, m)| {
-                let p = comp.perturbation_scalar(*x, *y);
-                let pred = p * bg;
+            .map(|(current_data, x, y, bg, current_mask)| {
+                let pert = comp.perturbation_scalar(*x, *y);
+                let pred = pert * bg;
                 if pred <= 0.0 {
                     0.0
                 } else {
-                    let residual = m * (d - pred);
+                    let residual = current_mask * (current_data - pred);
                     (residual * residual) / pred
                 }
             })
@@ -65,10 +69,10 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 1> {
     }
 }
 
-impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
+impl CostFunction for PSpiralModelProblem<'_, 2> {
     type Param = Vec<f64>;
     type Output = f64;
-    type Error = core::convert::Infallible;
+    type Error = convert::Infallible;
 
     fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
         let comp1 = PSpiralComponent {
@@ -93,14 +97,14 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
         };
 
         let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
-            .map(|(d, x, y, bg, m)| {
+            .map(|(current_data, x, y, bg, current_mask)| {
                 let p1 = comp1.perturbation_scalar(*x, *y);
                 let p2 = comp2.perturbation_scalar(*x, *y);
                 let pred = p1.max(p2) * bg;
                 if pred <= 0.0 {
                     0.0
                 } else {
-                    let residual = m * (d - pred);
+                    let residual = current_mask * (current_data - pred);
                     (residual * residual) / pred
                 }
             })
@@ -110,7 +114,7 @@ impl<'prob> CostFunction for PSpiralModelProblem<'prob, 2> {
     }
 }
 
-impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 1> {
+impl BoxConstraints for PSpiralModelProblem<'_, 1> {
     fn lower(&self) -> &Self::Param {
         self.lb
     }
@@ -120,7 +124,7 @@ impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 1> {
     }
 }
 
-impl<'prob> BoxConstraints for PSpiralModelProblem<'prob, 2> {
+impl BoxConstraints for PSpiralModelProblem<'_, 2> {
     fn lower(&self) -> &Self::Param {
         self.lb
     }
@@ -215,9 +219,9 @@ pub struct PSpiralFitResult {
 /// An iterator that performs the fitting process step-by-step.
 ///
 /// This allows for inspecting intermediate results or customizing the refinement loop.
-pub struct PSpiralFitterIterative<'a> {
+pub struct PSpiralFitterIterative<'fit> {
     /// The composite one and two arm spiral fitter.
-    pub fitter: &'a PSpiralFitter,
+    pub fitter: &'fit PSpiralFitter,
     /// The initial density grid.
     pub initial_density: Arc<[f64]>,
     /// The initial estimated background grid.
@@ -680,7 +684,7 @@ impl PSpiralFitterND<6> {
         let res = self
             .tiktak
             .minimize(
-                PSpiralModelProblem::<1> {
+                &PSpiralModelProblem::<1> {
                     data: initial_density,
                     background: initial_background,
                     mask,
@@ -791,7 +795,7 @@ impl PSpiralFitterND<12> {
         let res = self
             .tiktak
             .minimize(
-                PSpiralModelProblem::<2> {
+                &PSpiralModelProblem::<2> {
                     data: initial_density,
                     background: initial_background,
                     mask,

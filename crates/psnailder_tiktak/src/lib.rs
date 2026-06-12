@@ -1,7 +1,10 @@
+extern crate alloc;
+
+use alloc::collections::BinaryHeap;
 use argmin_testfunctions::rosenbrock;
 use basin::CostFunction;
-use core::{cmp, fmt};
-use std::collections::BinaryHeap;
+use core::{cmp, convert, fmt};
+use psnailder_core::usize_to_f64;
 
 #[derive(Debug)]
 pub struct OptimizationResult {
@@ -48,32 +51,59 @@ pub struct TikTak<const N: usize> {
 }
 
 impl<const N: usize> TikTak<N> {
+    /// Initialise a `TikTak` global optimizer.
+    ///
+    /// # Panics
+    /// This function assumes limits for the given parameters:
+    /// - `log_num_samples`: can not exceed `16` as that would require too much memory and needs to be greater than `0`.
+    /// - `keep_ratio`: this is a percentage and so should be between 0 and 1.
+    /// - `min_weight`: the minimum weight is `0.0`.
+    /// - `max_weight`: the maximum weight is `1.0`.
+    #[must_use]
     pub fn new(
         log_num_samples: u8,
         keep_ratio: f32,
         min_weight: f64,
         max_weight: f64,
     ) -> TikTak<N> {
-        assert!(log_num_samples <= 16);
-        assert!(log_num_samples > 0);
-        assert!(keep_ratio > 0.0);
-        assert!(keep_ratio <= 1.0);
-        assert!(min_weight < max_weight);
-        assert!(min_weight >= 0.0);
-        assert!(max_weight <= 1.0);
+        assert!(
+            log_num_samples <= 16,
+            "too much memory required for more than 2^16 samples."
+        );
+        assert!(
+            log_num_samples > 0,
+            "the log of the number of samples can't be less than or equal to 0."
+        );
+        assert!(
+            keep_ratio > 0.0,
+            "the number of points to keep must be greater than 0."
+        );
+        assert!(
+            keep_ratio <= 1.0,
+            "the number of points to keep must be less than the total number of samples."
+        );
+        assert!(
+            min_weight < max_weight,
+            "the minimum weight must be less than the maximum weight."
+        );
+        assert!(
+            min_weight >= 0.0,
+            "the minimum weight must be non-negative."
+        );
+        assert!(max_weight <= 1.0, "the maximum weight can not exceed 1.");
 
         let ndim = N;
 
         let num_samples = 2 << log_num_samples;
-        assert!(num_samples >= 1);
+        assert!(
+            num_samples >= 1,
+            "the number of samples must at least be 1."
+        );
 
-        let mut num_star = (keep_ratio * num_samples as f32).ceil() as usize;
-        if num_star > num_samples {
-            num_star = num_samples;
-        }
-        if num_star < 1 {
-            num_star = 1;
-        }
+        let num_samples_f64 = usize_to_f64!(num_samples, "`num_samples` can't exceed 2^16.");
+        let num_star = (f64::from(keep_ratio) * num_samples_f64)
+            .ceil()
+            .clamp(1.0, num_samples_f64) as usize;
 
         let points = (0..num_samples)
             .map(|i| {
@@ -83,7 +113,7 @@ impl<const N: usize> TikTak<N> {
                     point.extend(
                         sobol_burley::sample_4d(i as u32, dimension_set as u32, 0)
                             .into_iter()
-                            .map(|v| v as f64),
+                            .map(f64::from),
                     );
                 }
                 point.truncate(ndim);
@@ -102,9 +132,16 @@ impl<const N: usize> TikTak<N> {
 }
 
 impl<const N: usize> TikTak<N> {
+    /// Minimize a cost function using the `TikTak` global optimizer.
+    ///
+    /// # Errors
+    /// TODO
+    ///
+    /// # Panics
+    /// TODO
     pub fn minimize<C>(
         &self,
-        cost_func: C,
+        cost_func: &C,
         bounds: &[(f64, f64)],
     ) -> Result<OptimizationResult, C::Error>
     where
@@ -116,9 +153,8 @@ impl<const N: usize> TikTak<N> {
             + basin::BoxConstraints,
         C::Error: Send + fmt::Display,
     {
-        let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
-
         use rayon::prelude::*;
+        let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
         let evaluated_points: Vec<_> = self
             .points
@@ -127,7 +163,7 @@ impl<const N: usize> TikTak<N> {
                 let scaled_point: Vec<f64> = point
                     .iter()
                     .zip(bounds.iter())
-                    .map(|(p, (lb, ub))| lb + p * (ub - lb))
+                    .map(|(point, (lb, ub))| lb + point * (ub - lb))
                     .collect();
 
                 let cost = cost_func.cost(&scaled_point)?;
@@ -145,7 +181,11 @@ impl<const N: usize> TikTak<N> {
             }
         }
 
-        assert_eq!(heap.len(), self.num_star);
+        assert_eq!(
+            heap.len(),
+            self.num_star,
+            "the heap contains the top `num_star` points."
+        );
 
         let best_points = heap.into_sorted_vec();
 
@@ -155,9 +195,10 @@ impl<const N: usize> TikTak<N> {
             .into_par_iter()
             .enumerate()
             .filter_map(|(idx, current_seed)| {
-                let weight = (((idx + 1) as f64) / (self.num_star as f64))
-                    .powf(0.5)
-                    .clamp(self.min_weight, self.max_weight);
+                let weight = ((usize_to_f64!(idx + 1, "the indices will never exceed 2^52."))
+                    / (usize_to_f64!(self.num_star, "`num_star` can never exceed 2^52.")))
+                .sqrt()
+                .clamp(self.min_weight, self.max_weight);
 
                 let new_seed: Vec<f64> = current_seed
                     .point
@@ -176,25 +217,25 @@ impl<const N: usize> TikTak<N> {
                 .max_iter(200)
                 .run()
                 {
-                    Ok(r) => {
-                        let nfev = r.cost_evals();
-                        let best_param = r.best_param();
-                        let best_cost = r.best_cost();
+                    Ok(res) => {
+                        let nfev = res.cost_evals();
+                        let best_param = res.best_param();
+                        let best_cost = res.best_cost();
                         return Some((best_cost, best_param.to_owned(), nfev));
                     }
-                    Err(e) => eprintln!("restart {idx} failed: {e}"),
+                    Err(err) => eprintln!("restart {idx} failed: {err}"),
                 }
                 None
             })
             .collect::<Vec<(f64, Vec<f64>, u64)>>();
 
-        solutions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        solutions.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap());
 
         let nfev = solutions.iter().map(|(_, _, nfev)| nfev).sum::<u64>() + self.num_samples as u64;
-        let (global_best_cost, global_best_param, _) = solutions.first().unwrap();
+        let (global_best_cost, actual_global_best_param, _) = solutions.first().unwrap();
 
         Ok(OptimizationResult {
-            params: global_best_param.to_owned(),
+            params: actual_global_best_param.to_owned(),
             cost: *global_best_cost,
             nfev,
         })
@@ -210,9 +251,9 @@ struct Rosenbrock {
 impl basin::CostFunction for Rosenbrock {
     type Param = Vec<f64>;
     type Output = f64;
-    type Error = core::convert::Infallible;
-    fn cost(&self, p: &Self::Param) -> Result<Self::Output, Self::Error> {
-        Ok(rosenbrock(p))
+    type Error = convert::Infallible;
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
+        Ok(rosenbrock(param))
     }
 }
 
@@ -226,10 +267,15 @@ impl basin::BoxConstraints for Rosenbrock {
     }
 }
 
-pub fn run() -> Result<(), core::convert::Infallible> {
+/// Run a minimisation test using a 2D Rosenbrock function.
+///
+/// # Errors
+/// Minimisation can fail.
+#[must_use]
+pub fn run() -> Result<(), convert::Infallible> {
     let tiktak = TikTak::<2>::new(10, 128.0f32.recip(), 0.1, 0.995);
     let res = tiktak.minimize(
-        Rosenbrock {
+        &Rosenbrock {
             lb: vec![-5.0, -5.0],
             ub: vec![5.0, 5.0],
         },

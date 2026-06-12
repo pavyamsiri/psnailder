@@ -13,6 +13,7 @@ ndarray = { workspace = true }
 rayon = { workspace = true }
 sobol = { workspace = true }
 sobol_burley = { workspace = true }
+psnailder_core = { workspace = true }
 
 [lints]
 workspace = true

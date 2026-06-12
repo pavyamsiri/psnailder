@@ -1012,6 +1012,7 @@ dependencies = [
  "argmin_testfunctions",
  "basin",
  "ndarray 0.16.1",
+ "psnailder_core",
  "rayon",
  "sobol",
  "sobol_burley",
