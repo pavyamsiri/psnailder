@@ -1052,8 +1052,10 @@ version = "0.0.0"
 dependencies = [
  "assert_float_eq",
  "criterion",
+ "itertools 0.14.0",
  "proptest",
  "rand 0.10.1",
+ "wide 1.4.0",
 ]
 
 [[package]]

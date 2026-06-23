@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use psnailder_math::arctan2_vec;
+use psnailder_math::arctan2_vec_simd;
 use rand::RngExt as _;
 use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
@@ -30,6 +31,10 @@ fn bench_arctan2(crit: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("fast", size), &size, |bench, _| {
             bench.iter(|| arctan2_vec(black_box(&x), black_box(&y), black_box(&mut out)));
+        });
+
+        group.bench_with_input(BenchmarkId::new("fast_wide", size), &size, |bench, _| {
+            bench.iter(|| arctan2_vec_simd(black_box(&x), black_box(&y), black_box(&mut out)));
         });
     }
     group.finish();
