@@ -18,3 +18,7 @@ workspace = true
 name = "expit"
 harness = false
 
+[[bench]]
+name = "arctan2"
+harness = false
+

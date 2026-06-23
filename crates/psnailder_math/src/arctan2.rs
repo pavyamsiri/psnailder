@@ -1,5 +1,5 @@
 /// 11-degree polynomial approximation of atan(x) minimaxed in the range [-1, 1].
-fn atan_bound1(x: f64) -> f64 {
+fn arctan_bound1(x: f64) -> f64 {
     const A1: f64 = 0.999_977_121_162;
     const A3: f64 = -0.332_620_905_180;
     const A5: f64 = 0.193_528_178_987;
@@ -17,7 +17,7 @@ fn atan_bound1(x: f64) -> f64 {
 }
 
 /// Fast atan2 approximation over arrays of points.
-pub fn atan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
+pub fn arctan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
     assert_eq!(xs.len(), ys.len(), "`xs` and `ys` must be the same length.");
     assert_eq!(
         xs.len(),
@@ -29,7 +29,7 @@ pub fn atan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
         let swap = x.abs() < y.abs();
         let input = if swap { x / y } else { y / x };
 
-        let mut res = atan_bound1(input);
+        let mut res = arctan_bound1(input);
         if swap {
             if input >= 0.0 {
                 res = core::f64::consts::FRAC_PI_2 - res;
@@ -54,8 +54,8 @@ pub fn atan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
 
 #[cfg(test)]
 mod tests {
-    use super::atan_bound1;
-    use super::atan2_vec;
+    use super::arctan_bound1;
+    use super::arctan2_vec;
     use proptest::prelude::*;
 
     const MAX_LIMIT: f64 = 1e52;
@@ -67,7 +67,7 @@ mod tests {
         #[test]
         fn check_atan_bound1_error(x in -1.0f64..=1.0f64) {
             let expected = x.atan();
-            let actual = atan_bound1(x);
+            let actual = arctan_bound1(x);
             let abs_error = (actual - expected).abs();
             assert!(
                 abs_error < 1.7e-6,
@@ -80,7 +80,7 @@ mod tests {
         fn check_atan2_vec_error(x in -MAX_LIMIT..=MAX_LIMIT, y in -MAX_LIMIT..=MAX_LIMIT) {
             let expected = y.atan2(x);
             let mut out = [0.0; 1];
-            atan2_vec(&[x], &[y], &mut out);
+            arctan2_vec(&[x], &[y], &mut out);
             let actual = out[0];
             let abs_error = (actual- expected).abs();
             assert!(
