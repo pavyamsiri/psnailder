@@ -1,3 +1,5 @@
+use core::f64::consts::{FRAC_PI_2, PI};
+
 /// 11-degree polynomial approximation of atan(x) minimaxed in the range [-1, 1].
 fn arctan_bound1(x: f64) -> f64 {
     const A1: f64 = 0.999_977_121_162;
@@ -17,6 +19,10 @@ fn arctan_bound1(x: f64) -> f64 {
 }
 
 /// Fast atan2 approximation over arrays of points.
+///
+/// # Panics
+/// This function assumes that `xs`, `ys` and `out` are the same length
+/// and will panic if this is not true.
 pub fn arctan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
     assert_eq!(xs.len(), ys.len(), "`xs` and `ys` must be the same length.");
     assert_eq!(
@@ -32,20 +38,20 @@ pub fn arctan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
         let mut res = arctan_bound1(input);
         if swap {
             if input >= 0.0 {
-                res = core::f64::consts::FRAC_PI_2 - res;
+                res = FRAC_PI_2 - res;
             } else {
-                res = -core::f64::consts::FRAC_PI_2 - res;
+                res = -FRAC_PI_2 - res;
             }
         }
 
         if *x == 0.0 && *y == 0.0 {
             res = 0.0;
-        } else if *x >= 0.0 && *y >= 0.0 {
-        } else if *x < 0.0 && *y >= 0.0 {
-            res += core::f64::consts::PI;
-        } else if *x < 0.0 && *y < 0.0 {
-            res += -core::f64::consts::PI;
-        } else if *x >= 0.0 && *y < 0.0 {
+        } else if *x < 0.0 {
+            if *y >= 0.0 {
+                res += PI;
+            } else {
+                res += -PI;
+            }
         }
 
         *oo = res;
