@@ -20,6 +20,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 itertools = "0.14.0"
 ndarray = "0.16.0"
 numpy = "0.28.0"
+proptest = "1.11.0"
 pyo3 = { version = "0.28.3" }
 rand = "0.10.1"
 rayon = "1.10.0"

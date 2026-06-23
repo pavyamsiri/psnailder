@@ -8,6 +8,7 @@ edition = "2024"
 [dev-dependencies]
 assert_float_eq = { workspace = true }
 criterion = { workspace = true }
+proptest = { workspace = true }
 rand = { workspace = true }
 
 [lints]
