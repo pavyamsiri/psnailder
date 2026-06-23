@@ -262,78 +262,6 @@ pub struct PSpiralFitterIterative<'fit> {
     pub is_finished: bool,
 }
 
-/// Perform a Gaussian blur in 2D on the given data.
-#[must_use]
-fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64]> {
-    let (rows, cols) = shape;
-    let num_cells = rows * cols;
-    assert_eq!(data.len(), num_cells, "`data` must equal `num_cells`.");
-
-    if sigma <= 0.0 {
-        return Arc::from(data);
-    }
-
-    let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
-    let mut kernel = vec![0.0; kernel_size];
-    let half_size: i32 = (kernel_size / 2)
-        .try_into()
-        .expect("the kernel size will not exceed twice the limit of i32.");
-    let s2 = 2.0 * sigma * sigma;
-    let mut sum = 0.0;
-    for (i, kk) in kernel.iter_mut().enumerate() {
-        let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-        let x = f64::from(idx_i32 - half_size);
-        *kk = (-x * x / s2).exp();
-        sum += *kk;
-    }
-    for kk in kernel.iter_mut() {
-        *kk /= sum;
-    }
-
-    let mut out = ndarray::Array2::from_shape_vec(shape, data.to_vec()).unwrap();
-    let mut temp = ndarray::Array2::zeros(shape);
-
-    // Horizontal pass
-    let max_col_idx: i32 = cols
-        .try_into()
-        .expect("the number of columns will not exceed i32.");
-    for row_idx in 0..rows {
-        for col_idx in 0..cols {
-            let col_idx_i32: i32 = col_idx
-                .try_into()
-                .expect("the column index will not exceed i32.");
-            let mut val = 0.0;
-            for (i, kk) in kernel.iter().enumerate() {
-                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-                let cc = (col_idx_i32 + idx_i32 - half_size).clamp(0, max_col_idx - 1) as usize;
-                val += out[[row_idx, cc]] * kk;
-            }
-            temp[[row_idx, col_idx]] = val;
-        }
-    }
-
-    // Vertical pass
-    let max_row_idx: i32 = rows
-        .try_into()
-        .expect("the number of rows will not exceed i32.");
-    for row_idx in 0..rows {
-        let row_idx_i32: i32 = row_idx
-            .try_into()
-            .expect("the row index will not exceed i32.");
-        for col_idx in 0..cols {
-            let mut val = 0.0;
-            for (i, kk) in kernel.iter().enumerate() {
-                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-                let rr = (row_idx_i32 + idx_i32 - half_size).clamp(0, max_row_idx - 1) as usize;
-                val += temp[[rr, col_idx]] * kk;
-            }
-            out[[row_idx, col_idx]] = val;
-        }
-    }
-
-    Arc::from(out.into_raw_vec_and_offset().0)
-}
-
 impl Iterator for PSpiralFitterIterative<'_> {
     type Item = PSpiralFitResult;
 
@@ -608,6 +536,10 @@ impl PSpiralFitter {
     }
 
     /// Fits a spiral model with background refinement and returns the final result.
+    ///
+    /// # Panics
+    /// This function can panic if there are no results from the fitting algorithm, however,
+    /// this can only happen due to an internal error.
     #[must_use]
     pub fn fit_spiral_with_background(
         &self,
@@ -630,11 +562,7 @@ impl PSpiralFitter {
             true,
         );
 
-        let Some(last) = it.last() else {
-            panic!("should have at least one result");
-        };
-
-        last
+        it.last().expect("there will always be at least one result")
     }
 }
 
@@ -866,4 +794,76 @@ impl PSpiralFitterND<12> {
 
         (comp1, comp2, -res.cost)
     }
+}
+
+/// Perform a Gaussian blur in 2D on the given data.
+#[must_use]
+fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64]> {
+    let (rows, cols) = shape;
+    let num_cells = rows * cols;
+    assert_eq!(data.len(), num_cells, "`data` must equal `num_cells`.");
+
+    if sigma <= 0.0 {
+        return Arc::from(data);
+    }
+
+    let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
+    let mut kernel = vec![0.0; kernel_size];
+    let half_size: i32 = (kernel_size / 2)
+        .try_into()
+        .expect("the kernel size will not exceed twice the limit of i32.");
+    let s2 = 2.0 * sigma * sigma;
+    let mut sum = 0.0;
+    for (i, kk) in kernel.iter_mut().enumerate() {
+        let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+        let x = f64::from(idx_i32 - half_size);
+        *kk = (-x * x / s2).exp();
+        sum += *kk;
+    }
+    for kk in kernel.iter_mut() {
+        *kk /= sum;
+    }
+
+    let mut out = ndarray::Array2::from_shape_vec(shape, data.to_vec()).unwrap();
+    let mut temp = ndarray::Array2::zeros(shape);
+
+    // Horizontal pass
+    let max_col_idx: i32 = cols
+        .try_into()
+        .expect("the number of columns will not exceed i32.");
+    for row_idx in 0..rows {
+        for col_idx in 0..cols {
+            let col_idx_i32: i32 = col_idx
+                .try_into()
+                .expect("the column index will not exceed i32.");
+            let mut val = 0.0;
+            for (i, kk) in kernel.iter().enumerate() {
+                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+                let cc = (col_idx_i32 + idx_i32 - half_size).clamp(0, max_col_idx - 1) as usize;
+                val += out[[row_idx, cc]] * kk;
+            }
+            temp[[row_idx, col_idx]] = val;
+        }
+    }
+
+    // Vertical pass
+    let max_row_idx: i32 = rows
+        .try_into()
+        .expect("the number of rows will not exceed i32.");
+    for row_idx in 0..rows {
+        let row_idx_i32: i32 = row_idx
+            .try_into()
+            .expect("the row index will not exceed i32.");
+        for col_idx in 0..cols {
+            let mut val = 0.0;
+            for (i, kk) in kernel.iter().enumerate() {
+                let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+                let rr = (row_idx_i32 + idx_i32 - half_size).clamp(0, max_row_idx - 1) as usize;
+                val += temp[[rr, col_idx]] * kk;
+            }
+            out[[row_idx, col_idx]] = val;
+        }
+    }
+
+    Arc::from(out.into_raw_vec_and_offset().0)
 }
