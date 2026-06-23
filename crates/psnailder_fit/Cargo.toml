@@ -8,6 +8,7 @@ basin= { workspace = true }
 itertools = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }
+wide = { workspace = true }
 psnailder_core = { workspace = true }
 psnailder_math = { workspace = true }
 psnailder_mock = { workspace = true }

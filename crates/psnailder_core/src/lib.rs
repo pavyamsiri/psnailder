@@ -3,7 +3,8 @@ pub mod likelihood;
 
 use core::fmt;
 use itertools::izip;
-use psnailder_math::expit;
+use psnailder_math::{arctan2_wide, expit, expit_wide};
+use wide::f64x4;
 
 pub use likelihood::ln_likelihood;
 
@@ -145,6 +146,34 @@ impl PSpiralComponent {
         }
     }
 
+    /// Calculate the log spiral's phase defined implicitly as
+    ///
+    /// `r = b * phi + c * phi^2`
+    ///
+    /// for `wide`'s `f64x4` registers.
+    #[inline]
+    #[must_use]
+    pub fn spiral_phase_wide(&self, radius: f64x4) -> f64x4 {
+        let abs_c = self.c_winding.abs();
+        let abs_b = self.b_winding.abs();
+
+        // Quadratic branch: -b/(2c) + sqrt((b/(2c))^2 + r/c)
+        let half_b_over_c = f64x4::splat(0.5 * abs_b / abs_c);
+        let quadratic =
+            (half_b_over_c * half_b_over_c + radius / f64x4::splat(abs_c)).sqrt() - half_b_over_c;
+
+        // Linear branch: r / b
+        let linear = radius / f64x4::splat(abs_b);
+
+        // All lanes take the same branch since abs_c is scalar — mask is all-ones or all-zeros
+        let mask = f64x4::splat(if abs_c > 1e-10 {
+            f64::from_bits(u64::MAX)
+        } else {
+            0.0
+        });
+        mask.blend(quadratic, linear)
+    }
+
     /// Calculate the perturbation coefficient at a point `(z, vz)`.
     #[inline]
     #[must_use]
@@ -176,5 +205,25 @@ impl PSpiralComponent {
         for (zz, vzz, oo) in izip!(z.iter(), vz.iter(), out.iter_mut()) {
             *oo = self.perturbation_scalar(*zz, *vzz);
         }
+    }
+
+    /// Calculate the perturbation coefficient at a point `(z, vz)` implemented for `wide`'s `f64x4` registers.
+    #[inline]
+    #[must_use]
+    pub fn perturbation_wide(&self, z: f64x4, vz: f64x4) -> f64x4 {
+        const ONE: f64x4 = f64x4::splat(1.0);
+        let winding = f64x4::splat(f64::from(self.winding));
+        let scale_factor = self.scale_factor;
+
+        let scaled_vz = vz / scale_factor;
+        let radius = (z * z + scaled_vz * scaled_vz).sqrt();
+        let theta = arctan2_wide(z, scaled_vz);
+
+        let phase = self.spiral_phase_wide(radius);
+        let flattening = expit_wide((radius - self.rho) / self.flattening_strength);
+        let geometric_term = theta.mul_add(winding, -phase - self.theta0).cos();
+
+        // 1 + alpha * flattening * cos(theta - phi_s - theta0)
+        (self.alpha * flattening).mul_add(geometric_term, ONE)
     }
 }

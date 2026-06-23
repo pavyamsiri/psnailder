@@ -5,12 +5,14 @@
 
 extern crate alloc;
 
-use core::convert;
-
 use alloc::sync::Arc;
 use basin::{BoxConstraints, CostFunction};
+use core::convert;
+use itertools::izip;
 use psnailder_core::{PSpiralComponent, PSpiralModel, Winding, ln_likelihood};
 use psnailder_tiktak::TikTak;
+use wide::CmpLe as _;
+use wide::f64x4;
 
 /// A `basin` problem to optimise to find the best parameters for the phase spiral model.
 ///
@@ -52,18 +54,55 @@ impl CostFunction for PSpiralModelProblem<'_, 1> {
             flattening_strength: 0.1,
         };
 
-        let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
-            .map(|(current_data, x, y, bg, current_mask)| {
-                let pert = comp.perturbation_scalar(*x, *y);
-                let pred = pert * bg;
-                if pred <= 0.0 {
-                    0.0
-                } else {
-                    let residual = current_mask * (current_data - pred);
-                    (residual * residual) / pred
-                }
-            })
-            .sum();
+        let (data_chunks, data_remainder) = self.data.as_chunks::<4>();
+        let (x_chunks, x_remainder) = self.x.as_chunks::<4>();
+        let (y_chunks, y_remainder) = self.y.as_chunks::<4>();
+        let (background_chunks, background_remainder) = self.background.as_chunks::<4>();
+        let (mask_chunks, mask_remainder) = self.mask.as_chunks::<4>();
+
+        let mut res = 0.0;
+        let mut acc = f64x4::ZERO;
+
+        for (current_data, x, y, bg, current_mask) in izip!(
+            data_chunks,
+            x_chunks,
+            y_chunks,
+            background_chunks,
+            mask_chunks
+        ) {
+            let current_data = f64x4::from(*current_data);
+            let x = f64x4::from(*x);
+            let y = f64x4::from(*y);
+            let bg = f64x4::from(*bg);
+            let current_mask = f64x4::from(*current_mask);
+            let pert = comp.perturbation_wide(x, y);
+            let pred = pert * bg;
+            let residual = current_mask * (current_data - pred);
+            let term = (residual * residual) / pred;
+            let pred_mask = pred.simd_le(f64x4::ZERO);
+            let current_result = pred_mask.blend(f64x4::ZERO, term);
+
+            acc += current_result;
+        }
+
+        for (current_data, x, y, bg, current_mask) in izip!(
+            data_remainder,
+            x_remainder,
+            y_remainder,
+            background_remainder,
+            mask_remainder
+        ) {
+            let pert = comp.perturbation_scalar(*x, *y);
+            let pred = pert * bg;
+            res += if pred <= 0.0 {
+                0.0
+            } else {
+                let residual = current_mask * (current_data - pred);
+                (residual * residual) / pred
+            };
+        }
+
+        res += acc.reduce_add();
 
         Ok(0.5 * res)
     }
@@ -96,19 +135,58 @@ impl CostFunction for PSpiralModelProblem<'_, 2> {
             flattening_strength: 0.1,
         };
 
-        let res: f64 = itertools::izip!(self.data, self.x, self.y, self.background, self.mask)
-            .map(|(current_data, x, y, bg, current_mask)| {
-                let p1 = comp1.perturbation_scalar(*x, *y);
-                let p2 = comp2.perturbation_scalar(*x, *y);
-                let pred = p1.max(p2) * bg;
-                if pred <= 0.0 {
-                    0.0
-                } else {
-                    let residual = current_mask * (current_data - pred);
-                    (residual * residual) / pred
-                }
-            })
-            .sum();
+        let (data_chunks, data_remainder) = self.data.as_chunks::<4>();
+        let (x_chunks, x_remainder) = self.x.as_chunks::<4>();
+        let (y_chunks, y_remainder) = self.y.as_chunks::<4>();
+        let (background_chunks, background_remainder) = self.background.as_chunks::<4>();
+        let (mask_chunks, mask_remainder) = self.mask.as_chunks::<4>();
+
+        let mut res = 0.0;
+        let mut acc = f64x4::ZERO;
+
+        for (current_data, x, y, bg, current_mask) in izip!(
+            data_chunks,
+            x_chunks,
+            y_chunks,
+            background_chunks,
+            mask_chunks
+        ) {
+            let current_data = f64x4::from(*current_data);
+            let x = f64x4::from(*x);
+            let y = f64x4::from(*y);
+            let bg = f64x4::from(*bg);
+            let current_mask = f64x4::from(*current_mask);
+            let pert1 = comp1.perturbation_wide(x, y);
+            let pert2 = comp2.perturbation_wide(x, y);
+            let pert = pert1.max(pert2);
+            let pred = pert * bg;
+            let residual = current_mask * (current_data - pred);
+            let term = (residual * residual) / pred;
+            let pred_mask = pred.simd_le(f64x4::ZERO);
+            let current_result = pred_mask.blend(f64x4::ZERO, term);
+
+            acc += current_result;
+        }
+
+        for (current_data, x, y, bg, current_mask) in izip!(
+            data_remainder,
+            x_remainder,
+            y_remainder,
+            background_remainder,
+            mask_remainder
+        ) {
+            let p1 = comp1.perturbation_scalar(*x, *y);
+            let p2 = comp2.perturbation_scalar(*x, *y);
+            let pred = p1.max(p2) * bg;
+            res += if pred <= 0.0 {
+                0.0
+            } else {
+                let residual = current_mask * (current_data - pred);
+                (residual * residual) / pred
+            };
+        }
+
+        res += acc.reduce_add();
 
         Ok(0.5 * res)
     }

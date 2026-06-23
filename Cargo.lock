@@ -1044,6 +1044,7 @@ dependencies = [
  "psnailder_mock",
  "psnailder_tiktak",
  "rayon",
+ "wide 1.4.0",
 ]
 
 [[package]]

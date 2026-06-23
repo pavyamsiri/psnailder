@@ -1,3 +1,5 @@
+use wide::f64x4;
+
 /// The logistic sigmoid function defined as
 ///
 /// `sigm(x) = 1 / (1 + exp(-x))`
@@ -14,6 +16,21 @@ pub fn expit(x: f64) -> f64 {
 #[must_use]
 pub const fn expit_linear(x: f64) -> f64 {
     0.2f64.mul_add(x, 0.5).clamp(0.0, 1.0)
+}
+
+/// The fast logistic sigmoid function defined as
+///
+/// `sigm(x) = clamp(0.2 * x + 0.5, 0.0, 1.0)`
+///
+/// implemented for `wide`'s `f64x4` registers.
+#[inline]
+#[must_use]
+pub fn expit_wide(x: f64x4) -> f64x4 {
+    const COEFF: f64x4 = f64x4::splat(0.2);
+    const ZERO: f64x4 = f64x4::splat(0.0);
+    const ONE: f64x4 = f64x4::splat(1.0);
+    const CONSTANT: f64x4 = f64x4::splat(0.5);
+    COEFF.mul_add(x, CONSTANT).clamp(ZERO, ONE)
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ def _main() -> None:
     background_comp = GaussianComponent(x_scale=1, y_scale=40.0, amplitude=1, variance=0.25)
 
     mock_model = MockModel(
-        (signal1,),
+        (signal1, signal2),
         (background_comp,),
     )
 

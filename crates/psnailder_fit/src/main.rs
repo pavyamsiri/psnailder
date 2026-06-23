@@ -87,16 +87,20 @@ fn main() {
     let mesh_x = mock_result.mesh_x;
     let mesh_y = mock_result.mesh_y;
 
+    let mut num_iterations = 0;
     let start_time = std::time::Instant::now();
-    let res = fitter.fit_spiral_with_background(
-        &density,
-        &background,
-        &mask,
-        &mesh_x,
-        &mesh_y,
-        (num_y_bins, num_x_bins),
-    );
+    for _ in 0..3 {
+        let res = fitter.fit_spiral_with_background(
+            &density,
+            &background,
+            &mask,
+            &mesh_x,
+            &mesh_y,
+            (num_y_bins, num_x_bins),
+        );
+        num_iterations += res.num_iterations;
+    }
     let elapsed = start_time.elapsed();
-    println!("# of iterations = {:?}", res.num_iterations);
+    println!("# of iterations = {:?}", num_iterations);
     println!("Took {} seconds", elapsed.as_secs());
 }
