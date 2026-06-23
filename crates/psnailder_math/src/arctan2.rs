@@ -5,7 +5,8 @@ use wide::{CmpGt as _, CmpLt as _};
 use wide::{f64x4, u64x4};
 
 /// 11-degree polynomial approximation of atan(x) minimaxed in the range [-1, 1].
-fn arctan_bound1(x: f64) -> f64 {
+#[must_use]
+pub const fn arctan_bound1(x: f64) -> f64 {
     const A1: f64 = 0.999_977_121_162;
     const A3: f64 = -0.332_620_905_180;
     const A5: f64 = 0.193_528_178_987;
@@ -39,6 +40,65 @@ fn arctan_bound1_wide(x: f64x4) -> f64x4 {
         .mul_add(z, A1);
     x * px
 }
+
+/// Fast atan2 approximation.
+#[inline]
+#[must_use]
+pub fn arctan2_scalar(x: f64, y: f64) -> f64 {
+    let swap = x.abs() < y.abs();
+    let input = if swap { x / y } else { y / x };
+
+    let mut res = input.atan();
+    if swap {
+        if input >= 0.0 {
+            res = FRAC_PI_2 - res;
+        } else {
+            res = -FRAC_PI_2 - res;
+        }
+    }
+
+    if x == 0.0 && y == 0.0 {
+        res = 0.0;
+    } else if x < 0.0 {
+        if y >= 0.0 {
+            res += PI;
+        } else {
+            res += -PI;
+        }
+    }
+    res
+}
+
+/// Fast atan2 approximation for wide SIMD registers.
+#[inline]
+#[must_use]
+pub fn arctan2_wide(x: f64x4, y: f64x4) -> f64x4 {
+    const PI_REG: f64x4 = f64x4::PI;
+    const FRAC_PI_2_REG: f64x4 = f64x4::FRAC_PI_2;
+    const ABS_MASK_REG: u64x4 = u64x4::splat(0x7FFF_FFFF_FFFF_FFFF);
+    const SIGN_MASK_REG: u64x4 = u64x4::splat(0x8000_0000_0000_0000);
+
+    let y_abs: f64x4 = bytemuck::cast(bytemuck::cast::<f64x4, u64x4>(y) & ABS_MASK_REG);
+    let x_abs: f64x4 = bytemuck::cast(bytemuck::cast::<f64x4, u64x4>(x) & ABS_MASK_REG);
+    let swap_mask = y_abs.simd_gt(x_abs);
+
+    let atan_input = swap_mask.blend(x, y) / swap_mask.blend(y, x);
+    let result = arctan_bound1_wide(atan_input);
+
+    // sign transfer onto pi/2: OR the sign bit of atan_input into pi/2
+    let pi_2_bits = bytemuck::cast::<f64x4, u64x4>(FRAC_PI_2_REG);
+    let input_sign = bytemuck::cast::<f64x4, u64x4>(atan_input) & SIGN_MASK_REG;
+    let pi_2_signed: f64x4 = bytemuck::cast(pi_2_bits | input_sign);
+    let result = swap_mask.blend(pi_2_signed - result, result);
+
+    // quadrant adjustment: XOR pi with y's sign, AND with x<0 mask
+    let x_neg_mask: u64x4 = bytemuck::cast(x.simd_lt(f64x4::ZERO)); // all-1s where x<0
+    let pi_signed: u64x4 = bytemuck::cast::<f64x4, u64x4>(PI_REG)
+        ^ (bytemuck::cast::<f64x4, u64x4>(y) & SIGN_MASK_REG);
+    let adjustment: f64x4 = bytemuck::cast(x_neg_mask & pi_signed);
+    result + adjustment
+}
+
 /// Fast atan2 approximation over arrays of points.
 ///
 /// # Panics
@@ -53,29 +113,7 @@ pub fn arctan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
     );
 
     for ((x, y), oo) in xs.iter().zip(ys.iter()).zip(out.iter_mut()) {
-        let swap = x.abs() < y.abs();
-        let input = if swap { x / y } else { y / x };
-
-        let mut res = input.atan();
-        if swap {
-            if input >= 0.0 {
-                res = FRAC_PI_2 - res;
-            } else {
-                res = -FRAC_PI_2 - res;
-            }
-        }
-
-        if *x == 0.0 && *y == 0.0 {
-            res = 0.0;
-        } else if *x < 0.0 {
-            if *y >= 0.0 {
-                res += PI;
-            } else {
-                res += -PI;
-            }
-        }
-
-        *oo = res;
+        *oo = arctan2_scalar(*x, *y);
     }
 }
 
@@ -85,10 +123,6 @@ pub fn arctan2_vec(xs: &[f64], ys: &[f64], out: &mut [f64]) {
 /// This function assumes that `xs`, `ys` and `out` are the same length
 /// and will panic if this is not true.
 pub fn arctan2_vec_simd(xs: &[f64], ys: &[f64], out: &mut [f64]) {
-    const PI_REG: f64x4 = f64x4::PI;
-    const FRAC_PI_2_REG: f64x4 = f64x4::FRAC_PI_2;
-    const ABS_MASK_REG: u64x4 = u64x4::splat(0x7FFF_FFFF_FFFF_FFFF);
-    const SIGN_MASK_REG: u64x4 = u64x4::splat(0x8000_0000_0000_0000);
     assert_eq!(xs.len(), ys.len(), "`xs` and `ys` must be the same length.");
     assert_eq!(
         xs.len(),
@@ -104,27 +138,7 @@ pub fn arctan2_vec_simd(xs: &[f64], ys: &[f64], out: &mut [f64]) {
         let x = f64x4::from(*current_x);
         let y = f64x4::from(*current_y);
 
-        let y_abs: f64x4 = bytemuck::cast(bytemuck::cast::<f64x4, u64x4>(y) & ABS_MASK_REG);
-        let x_abs: f64x4 = bytemuck::cast(bytemuck::cast::<f64x4, u64x4>(x) & ABS_MASK_REG);
-        let swap_mask = y_abs.simd_gt(x_abs);
-
-        let atan_input = swap_mask.blend(x, y) / swap_mask.blend(y, x);
-        let result = arctan_bound1_wide(atan_input);
-
-        // sign transfer onto pi/2: OR the sign bit of atan_input into pi/2
-        let pi_2_bits = bytemuck::cast::<f64x4, u64x4>(FRAC_PI_2_REG);
-        let input_sign = bytemuck::cast::<f64x4, u64x4>(atan_input) & SIGN_MASK_REG;
-        let pi_2_signed: f64x4 = bytemuck::cast(pi_2_bits | input_sign);
-        let result = swap_mask.blend(pi_2_signed - result, result);
-
-        // quadrant adjustment: XOR pi with y's sign, AND with x<0 mask
-        let x_neg_mask: u64x4 = bytemuck::cast(x.simd_lt(f64x4::ZERO)); // all-1s where x<0
-        let pi_signed: u64x4 = bytemuck::cast::<f64x4, u64x4>(PI_REG)
-            ^ (bytemuck::cast::<f64x4, u64x4>(y) & SIGN_MASK_REG);
-        let adjustment: f64x4 = bytemuck::cast(x_neg_mask & pi_signed);
-        let result = result + adjustment;
-
-        *current_out = result.to_array();
+        *current_out = arctan2_wide(x, y).to_array();
     }
 
     arctan2_vec(xs_remainder, ys_remainder, out_remainder);
