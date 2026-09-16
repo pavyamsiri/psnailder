@@ -9,7 +9,7 @@ import numpy as np
 from scipy import special
 
 from .component import PSpiralComponent
-from .likelihood_utils import lrt_pvalue
+from ._likelihood_utils import lrt_pvalue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -59,14 +59,16 @@ class PSpiralModel:
 
         # spiral phase: handle c != 0 and c == 0 (vectorised, avoid dividing by zero)
         phase = np.empty_like(r)
-        c_mask = c[:, 0, 0] != 0.0
+        abs_b = np.abs(b)
+        abs_c = np.abs(c)
+        c_mask = abs_c[:, 0, 0] > 1e-10
 
         # Compute for components where c != 0 using boolean indexing
-        half = 0.5 * b[c_mask] / c[c_mask]
-        phase[c_mask] = -half + np.sqrt(np.square(half) + r[c_mask] / c[c_mask])
+        half = 0.5 * abs_b[c_mask] / abs_c[c_mask]
+        phase[c_mask] = -half + np.sqrt(np.square(half) + r[c_mask] / abs_c[c_mask])
 
         # For components where c == 0, use r / b
-        phase[~c_mask] = r[~c_mask] / b[~c_mask]
+        phase[~c_mask] = r[~c_mask] / abs_b[~c_mask]
 
         flattening = special.expit((r - rho) / self.flattening_strength)
         pert = 1.0 + alphas * flattening * np.cos(self.winding * theta - phase - theta0)
@@ -82,7 +84,7 @@ class PSpiralModel:
         assert self.z_mesh.shape == self.background.shape
         assert self.z_mesh.shape == data.shape
 
-        return lrt_pvalue(data, self.prediction(), self.background, mask, dof=6)
+        return lrt_pvalue(data, self.prediction(), self.background, mask, dof=6 * self.parameters.shape[0])
 
     @property
     def components(self) -> Sequence[PSpiralComponent]:

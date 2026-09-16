@@ -1,0 +1,121 @@
+[workspace]
+members = [
+    "crates/psnailder_core",
+    "py-psnailder",
+    "crates/psnailder_tiktak",
+    "crates/psnailder_fit",
+    "crates/psnailder_mock",
+    "crates/psnailder_math",
+]
+resolver = "3"
+
+[workspace.dependencies]
+assert_float_eq = "1.2.0"
+argmin = "0.11.0"
+argmin-math = { version = "0.5.1", features = ["ndarray_latest"] }
+argmin-observer-slog = "0.2.0"
+argmin_testfunctions = "0.3.0"
+basin = "0.10.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+itertools = "0.14.0"
+ndarray = "0.16.0"
+numpy = "0.28.0"
+proptest = "1.11.0"
+pyo3 = { version = "0.28.3" }
+rand = "0.10.1"
+rayon = "1.10.0"
+sobol = "1.0.2"
+sobol_burley = "0.5.0"
+statrs = "0.18.0"
+wide = "1.4.0"
+
+psnailder_core = { path = "crates/psnailder_core" }
+psnailder_fit = { path = "crates/psnailder_fit" }
+psnailder_math = { path = "crates/psnailder_math" }
+psnailder_mock = { path = "crates/psnailder_mock" }
+psnailder_tiktak = { path = "crates/psnailder_tiktak" }
+
+[profile.release]
+debug = true
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+cargo = { priority = -1, level = "deny" }
+complexity = { priority = -1, level = "deny" }
+correctness = { priority = -1, level = "deny" }
+nursery = { priority = -1, level = "deny" }
+pedantic = { priority = -1, level = "deny" }
+perf = { priority = -1, level = "deny" }
+style = { priority = -1, level = "deny" }
+suspicious = { priority = -1, level = "deny" }
+
+missing_docs_in_private_items = "allow"
+cargo_common_metadata = "allow"
+implicit_return = "allow"
+multiple_crate_versions = "allow"
+redundant_pub_crate = "allow"
+use_self = "allow"
+explicit_iter_loop = "allow"
+pattern_type_mismatch = "allow"
+integer_division = "allow"
+cast_sign_loss = "allow"
+cast_possible_truncation = "allow"
+
+absolute_paths = "deny"
+alloc_instead_of_core = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+clone_on_ref_ptr = "deny"
+create_dir = "deny"
+dbg_macro = "deny"
+deref_by_slicing = "deny"
+disallowed_script_idents = "deny"
+doc_include_without_cfg = "deny"
+exit = "deny"
+filetype_is_file = "deny"
+float_cmp_const = "deny"
+get_unwrap = "deny"
+host_endian_bytes = "deny"
+if_then_some_else_none = "deny"
+infinite_loop = "deny"
+iter_over_hash_type = "deny"
+large_include_file = "deny"
+let_underscore_must_use = "deny"
+map_err_ignore = "deny"
+mem_forget = "deny"
+min_ident_chars = "deny"
+missing_assert_message = "deny"
+mod_module_files = "deny"
+multiple_unsafe_ops_per_block = "deny"
+needless_raw_strings = "deny"
+panic = "deny"
+partial_pub_fields = "deny"
+pathbuf_init_then_push = "deny"
+pointer_format = "deny"
+precedence_bits = "deny"
+pub_without_shorthand = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+redundant_test_prefix = "deny"
+redundant_type_annotations = "deny"
+renamed_function_params = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+return_and_then = "deny"
+same_name_method = "deny"
+semicolon_inside_block = "deny"
+separated_literal_suffix = "deny"
+shadow_unrelated = "deny"
+single_char_lifetime_names = "deny"
+std_instead_of_alloc = "deny"
+std_instead_of_core = "deny"
+str_to_string = "deny"
+string_add = "deny"
+string_lit_chars_any = "deny"
+try_err = "deny"
+undocumented_unsafe_blocks = "deny"
+unneeded_field_pattern = "deny"
+unused_trait_names = "deny"
+
