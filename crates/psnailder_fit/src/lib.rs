@@ -77,6 +77,9 @@ impl CostFunction for PSpiralModelProblem<'_, 1> {
             let current_mask = f64x4::from(*current_mask);
             let pert = comp.perturbation_wide(x, y);
             let pred = pert * bg;
+            if pred.to_array().iter().any(|value| !value.is_finite()) {
+                return Ok(f64::INFINITY);
+            }
             let residual = current_mask * (current_data - pred);
             let term = (residual * residual) / pred;
             let pred_mask = pred.simd_le(f64x4::ZERO);
@@ -94,6 +97,9 @@ impl CostFunction for PSpiralModelProblem<'_, 1> {
         ) {
             let pert = comp.perturbation_scalar(*x, *y);
             let pred = pert * bg;
+            if !pred.is_finite() {
+                return Ok(f64::INFINITY);
+            }
             res += if pred <= 0.0 {
                 0.0
             } else {
@@ -158,8 +164,20 @@ impl CostFunction for PSpiralModelProblem<'_, 2> {
             let current_mask = f64x4::from(*current_mask);
             let pert1 = comp1.perturbation_wide(x, y);
             let pert2 = comp2.perturbation_wide(x, y);
+            // max can hide a NaN in one arm, so validate both first.
+            if pert1
+                .to_array()
+                .iter()
+                .chain(pert2.to_array().iter())
+                .any(|value| !value.is_finite())
+            {
+                return Ok(f64::INFINITY);
+            }
             let pert = pert1.max(pert2);
             let pred = pert * bg;
+            if pred.to_array().iter().any(|value| !value.is_finite()) {
+                return Ok(f64::INFINITY);
+            }
             let residual = current_mask * (current_data - pred);
             let term = (residual * residual) / pred;
             let pred_mask = pred.simd_le(f64x4::ZERO);
@@ -177,7 +195,13 @@ impl CostFunction for PSpiralModelProblem<'_, 2> {
         ) {
             let p1 = comp1.perturbation_scalar(*x, *y);
             let p2 = comp2.perturbation_scalar(*x, *y);
+            if !p1.is_finite() || !p2.is_finite() {
+                return Ok(f64::INFINITY);
+            }
             let pred = p1.max(p2) * bg;
+            if !pred.is_finite() {
+                return Ok(f64::INFINITY);
+            }
             res += if pred <= 0.0 {
                 0.0
             } else {
@@ -189,6 +213,52 @@ impl CostFunction for PSpiralModelProblem<'_, 2> {
         res += acc.reduce_add();
 
         Ok(0.5 * res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objectives_reject_nonfinite_predictions() {
+        let data = [2.0; 7];
+        let coordinates = [0.1; 7];
+        let bounds = vec![0.0; 12];
+        let single = vec![0.5, 0.05, 0.002, 0.0, 40.0, 0.09];
+        let double = single.repeat(2);
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for index in 0..7 {
+                for weight in [0.0, 1.0] {
+                    let mut background = [1.0; 7];
+                    background[index] = invalid;
+                    let mut mask = [1.0; 7];
+                    mask[index] = weight;
+                    let one = PSpiralModelProblem::<1> {
+                        data: &data,
+                        background: &background,
+                        mask: &mask,
+                        x: &coordinates,
+                        y: &coordinates,
+                        winding: Winding::Positive,
+                        lb: &bounds,
+                        ub: &bounds,
+                    };
+                    let two = PSpiralModelProblem::<2> {
+                        data: &data,
+                        background: &background,
+                        mask: &mask,
+                        x: &coordinates,
+                        y: &coordinates,
+                        winding: Winding::Positive,
+                        lb: &bounds,
+                        ub: &bounds,
+                    };
+                    assert_eq!(one.cost(&single).unwrap(), f64::INFINITY);
+                    assert_eq!(two.cost(&double).unwrap(), f64::INFINITY);
+                }
+            }
+        }
     }
 }
 

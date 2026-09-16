@@ -26,12 +26,16 @@ def ln_likelihood(data: onp.Array2D[np.float64], prediction: onp.Array2D[np.floa
     Returns
     -------
     float
-        The log-likelihood.
+        The log-likelihood, or negative infinity for any nonfinite prediction,
+        including predictions in cells with zero mask weight.
 
     """
     assert data.ndim == 2
     assert data.shape == prediction.shape
     assert data.shape == mask.shape
+
+    if not np.all(np.isfinite(prediction)):
+        return float("-inf")
 
     square_residuals = np.square(mask * (data - prediction))
     denom = prediction

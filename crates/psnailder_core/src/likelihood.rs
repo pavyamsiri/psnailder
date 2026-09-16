@@ -30,6 +30,9 @@ pub fn ln_likelihood_naive(data: &[f64], prediction: &[f64], mask: &[f64]) -> f6
 
     let mut result = 0.0;
     for (current_data, current_prediction, current_mask) in izip!(data, prediction, mask) {
+        if !current_prediction.is_finite() {
+            return f64::NEG_INFINITY;
+        }
         if *current_prediction <= 0.0 {
             continue;
         }
@@ -70,6 +73,9 @@ pub fn ln_likelihood_wide(data: &[f64], prediction: &[f64], mask: &[f64]) -> f64
     for (current_data, current_prediction, current_mask) in
         izip!(data_chunks, prediction_chunks, mask_chunks)
     {
+        if current_prediction.iter().any(|value| !value.is_finite()) {
+            return f64::NEG_INFINITY;
+        }
         let current_data = f64x4::from(*current_data);
         let current_prediction = f64x4::from(*current_prediction);
         let current_mask = f64x4::from(*current_mask);
@@ -98,6 +104,28 @@ mod tests {
     use rand::RngExt as _;
     use rand::SeedableRng as _;
     use rand::rngs::SmallRng;
+
+    #[test]
+    fn nonfinite_predictions_invalidate_entire_likelihood() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for index in 0..7 {
+                for weight in [0.0, 1.0] {
+                    let mut prediction = [1.0; 7];
+                    prediction[index] = invalid;
+                    let mut mask = [1.0; 7];
+                    mask[index] = weight;
+                    assert_eq!(
+                        ln_likelihood_naive(&[2.0; 7], &prediction, &mask),
+                        f64::NEG_INFINITY
+                    );
+                    assert_eq!(
+                        ln_likelihood_wide(&[2.0; 7], &prediction, &mask),
+                        f64::NEG_INFINITY
+                    );
+                }
+            }
+        }
+    }
 
     /// Make test data.
     fn make_data(n: usize, zero_fraction: f64, seed: u64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
