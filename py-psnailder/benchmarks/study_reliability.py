@@ -50,7 +50,12 @@ def run_study():
     start = time.perf_counter()
     res_py = fitter_py.fit_spiral_with_background(density, initial_background, x_mesh, y_mesh, improve_background=False)
     elapsed = time.perf_counter() - start
-    print(f"{'Python DE':<20} | {res_py.lnl:<15.4f} | {elapsed:<10.3f} | {'OK'}")
+    from psnailder.fit import FitFailure
+
+    if isinstance(res_py, FitFailure):
+        print(f"{'Python DE':<20} | {'N/A':<15} | {elapsed:<10.3f} | {res_py.reason}: {res_py.message}")
+    else:
+        print(f"{'Python DE':<20} | {res_py.result.lnl:<15.4f} | {elapsed:<10.3f} | {res_py.result.reason}")
 
     # 2. Rust TikTak with various sample sizes
     sample_sizes = [256, 512, 1024, 2048, 4096]

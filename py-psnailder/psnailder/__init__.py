@@ -110,13 +110,17 @@ def _main() -> None:
     print("\n--- Python Version ---")
     fitter_py = PSpiralFitterPython(max_iterations=10)
     start_time = time.perf_counter()
-    res_py = fitter_py.fit_spiral_with_background(
+    outcome_py = fitter_py.fit_spiral_with_background(
         density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True
     )
     elapsed_py = time.perf_counter() - start_time
+    if isinstance(outcome_py, fit.FitFailure):
+        print(f"Python fit failed: {outcome_py.reason}: {outcome_py.message}")
+        return
+    res_py = outcome_py.result
     print(f"Python took {elapsed_py:.3f} seconds")
     print(f"Python iterations: {res_py.num_iterations}")
-    print(f"Python converged: {res_py.converged}")
+    print(f"Python termination: {res_py.reason}")
     print(f"Python final model: {res_py.final_model}")
     print(f"Python final lnl: {res_py.lnl}")
     print(f"Python pvalue: {res_py.final_model.pvalue(density, mask)}")

@@ -11,7 +11,16 @@ from optype import numpy as onp
 from scipy.optimize import OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
-from psnailder.fit import PSpiralFitter, _DEFAULT_PARAM_HI, _DEFAULT_PARAM_LO
+from psnailder.fit import (
+    FitFailure,
+    FitFailureReason,
+    FitProgress,
+    FitSuccess,
+    FitTerminationReason,
+    PSpiralFitter,
+    _DEFAULT_PARAM_HI,
+    _DEFAULT_PARAM_LO,
+)
 
 
 def test_bounds_preserve_caller_arrays_and_resolve_defaults() -> None:
@@ -117,7 +126,8 @@ def test_warm_start_forwarded_to_differential_evolution(num_components: int) -> 
     optimizer.assert_called_once()
     assert optimizer.call_args is not None
     np.testing.assert_array_equal(optimizer.call_args.kwargs["x0"], parameters)
-    np.testing.assert_array_equal(result.final_model.to_array(), parameters)
+    assert isinstance(result, FitSuccess)
+    np.testing.assert_array_equal(result.result.final_model.to_array(), parameters)
 
 
 @pytest.mark.parametrize("num_components", [1, 2])
@@ -145,19 +155,19 @@ def test_warm_start_rejected_with_automatic_component_selection(num_components: 
 
 
 @pytest.mark.parametrize(
-    ("updates", "improve_background", "expected_converged", "expected_iterations", "accepts_background"),
+    ("updates", "improve_background", "expected_reason", "expected_iterations", "accepts_background"),
     [
-        pytest.param((True,), True, False, 1, True, id="accepted-at-iteration-limit"),
-        pytest.param((False,), True, False, 1, False, id="first-update-rejected"),
-        pytest.param((True, False), True, True, 2, True, id="accepted-then-rejected"),
-        pytest.param((), False, True, 1, False, id="fixed-background"),
+        pytest.param((True,), True, FitTerminationReason.ITERATION_LIMIT, 1, True, id="accepted-at-iteration-limit"),
+        pytest.param((False,), True, FitTerminationReason.NO_IMPROVEMENT, 1, False, id="first-update-rejected"),
+        pytest.param((True, False), True, FitTerminationReason.NO_IMPROVEMENT, 2, True, id="accepted-then-rejected"),
+        pytest.param((), False, FitTerminationReason.FIXED_BACKGROUND, 1, False, id="fixed-background"),
     ],
 )
 def test_background_refinement_result_consistency(
     monkeypatch: pytest.MonkeyPatch,
     updates: tuple[bool, ...],
     improve_background: bool,
-    expected_converged: bool,
+    expected_reason: FitTerminationReason,
     expected_iterations: int,
     accepts_background: bool,
 ) -> None:
@@ -213,13 +223,17 @@ def test_background_refinement_result_consistency(
         )
     )
 
-    for result in results:
-        recomputed = ln_likelihood(data, result.final_model.prediction(), mask)
-        assert result.lnl == pytest.approx(recomputed)
-        np.testing.assert_array_equal(result.initial_model.background, initial_background)
+    for event in results[:-1]:
+        assert isinstance(event, FitProgress)
+        recomputed = ln_likelihood(data, event.model.prediction(), mask)
+        assert event.lnl == pytest.approx(recomputed)
 
-    final = results[-1]
-    assert final.converged is expected_converged
+    outcome = results[-1]
+    assert isinstance(outcome, FitSuccess)
+    final = outcome.result
+    np.testing.assert_array_equal(final.initial_model.background, initial_background)
+    assert final.lnl == pytest.approx(ln_likelihood(data, final.final_model.prediction(), mask))
+    assert final.reason is expected_reason
     assert final.num_iterations == expected_iterations
     assert smoothing_calls == len(updates)
     assert final.lnl == pytest.approx(0.0 if accepts_background else -1.0)
@@ -246,10 +260,91 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     dvz: float = 2.0
     z_bins = np.arange(-1.2, 1.2 + dz, dz)
     vz_bins = np.arange(-60.0, 60.0 + dvz, dvz)
-    res = fitter.fit_spiral(z, vz, z_bins, vz_bins)
+    outcome = fitter.fit_spiral(z, vz, z_bins, vz_bins)
+    assert isinstance(outcome, FitSuccess)
+    res = outcome.result
 
     assert res.final_model.pvalue(res.data, fitter._mask_func(res.final_model.z_mesh, res.final_model.vz_mesh)) > 0.05
 
 
-def smoke() -> None:
-    assert False
+@pytest.mark.parametrize("positive_valid", [True, False])
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_winding_selection_retains_finite_candidate(positive_valid: bool, invalid: float) -> None:
+    parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
+    grid = np.ones((2, 2))
+    valid = OptimizeResult(x=parameters, fun=0.0)
+    failed = OptimizeResult(x=parameters, fun=invalid)
+    with patch.object(PSpiralFitter, "_optimize_parameters", side_effect=[valid, failed] if positive_valid else [failed, valid]):
+        outcome = PSpiralFitter().fit_spiral_with_background(
+            grid,
+            grid,
+            grid,
+            grid,
+            num_components=1,
+            improve_background=False,
+        )
+    assert isinstance(outcome, FitSuccess)
+    assert outcome.result.final_model.winding == (1 if positive_valid else -1)
+
+
+@pytest.mark.parametrize("successful_count", [None, 1, 2, 0], ids=["neither", "one-arm", "two-arms", "both"])
+@pytest.mark.parametrize("improve", [False, True])
+def test_component_selection_retains_success(successful_count: int | None, improve: bool) -> None:
+    grid = np.ones((2, 2))
+    fitter = PSpiralFitter(max_iterations=1)
+    calls = 0
+
+    def optimize(
+        objective: Callable[[onp.Array1D[np.float64]], onp.ToFloat],
+        *,
+        rng: np.random.Generator,
+        warm_start: onp.Array1D[np.float64] | None,
+        param_count: int = 1,
+    ) -> OptimizeResult:
+        nonlocal calls
+        calls += 1
+        parameters = np.tile([0.0, 0.05, 0.002, 0.0, 40.0, 0.09], param_count)
+        valid = calls <= 2 and (successful_count == 0 or param_count == successful_count)
+        return OptimizeResult(x=parameters, fun=float(objective(parameters)) if valid else np.inf)
+
+    with patch.object(fitter, "_optimize_parameters", side_effect=optimize):
+        events = list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid, winding=-1, improve_background=improve))
+    assert len(events) == 1
+    outcome = events[0]
+    if successful_count is None:
+        assert isinstance(outcome, FitFailure)
+        assert outcome.reason is FitFailureReason.NO_VALID_CANDIDATE
+    else:
+        assert isinstance(outcome, FitSuccess)
+        result = outcome.result
+        # With equal likelihoods, BIC chooses the one-component fit.
+        assert result.final_model.parameters.shape == (successful_count or 1, 6)
+        assert result.final_model.winding == -1
+        assert result.lnl == pytest.approx(0.0)
+        assert result.reason is (FitTerminationReason.FAILED_REOPTIMIZATION if improve else FitTerminationReason.FIXED_BACKGROUND)
+        assert calls == (3 if improve else 2)
+
+
+@pytest.mark.parametrize("accepted_first", [False, True])
+def test_invalid_background_retains_valid_fit(accepted_first: bool) -> None:
+    data = np.array([[1.0, 3.0], [2.0, 4.0]])
+    background = np.full_like(data, 2.5)
+    mesh = np.zeros_like(data)
+    parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
+    proposals = iter(([data.copy()] if accepted_first else []) + [np.full_like(data, np.nan)])
+    fitter = PSpiralFitter(max_iterations=3, smoothing_func=lambda arr: next(proposals))
+    scores = [1.0, 0.0] if accepted_first else [1.0]
+    with patch.object(fitter, "_optimize_parameters", side_effect=[OptimizeResult(x=parameters, fun=s) for s in scores]):
+        events = list(fitter.fit_spiral_with_background_gen(data, background, mesh, mesh, winding=1, num_components=1))
+    assert all(isinstance(event, FitProgress) for event in events[:-1])
+    outcome = events[-1]
+    assert isinstance(outcome, FitSuccess)
+    assert outcome.result.reason is FitTerminationReason.INVALID_BACKGROUND_UPDATE
+    np.testing.assert_array_equal(outcome.result.final_model.background, data if accepted_first else background)
+
+
+def test_zero_iteration_budget_yields_failure() -> None:
+    grid = np.ones((2, 2))
+    events = list(PSpiralFitter(max_iterations=0).fit_spiral_with_background_gen(grid, grid, grid, grid, num_components=1))
+    assert len(events) == 1
+    assert isinstance(events[0], FitFailure)
