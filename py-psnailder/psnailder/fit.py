@@ -412,18 +412,19 @@ class PSpiralFitter:
         objective_func: _ObjectiveFunc,
         *,
         rng: np.random.Generator,
-        warm_start: onp.Array1D[np.float64] | None,
-        param_count: int = 1,
+        guess: onp.Array1D[np.float64] | None,
+        num_components: int = 1,
     ) -> optimize.OptimizeResult:
-        # warm_start may be None or a flat vector of length 6 * param_count
-        assert warm_start is None or (warm_start.ndim == 1 and len(warm_start) == 6 * param_count)
-        base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
-        bounds = base_bounds * param_count
+        # `guess` may be None or a flat vector of length 6 * `num_components`
+        assert guess is None or (guess.ndim == 1 and len(guess) == 6 * num_components)
+        lo = np.tile(self._param_lo, num_components)
+        hi = np.tile(self._param_hi, num_components)
+        bounds = optimize.Bounds(lo, hi)
 
         def objective(parameters: onp.Array1D[np.float64]) -> float:
             return float(objective_func(parameters))
 
-        res = optimize.differential_evolution(objective, bounds=bounds, x0=warm_start, rng=rng)
+        res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
         if not res.success:
             log.warning("Failed to find maximum likelihood: %s", res.message)
         return res
@@ -528,8 +529,8 @@ class PSpiralFitter:
         res: optimize.OptimizeResult
         chosen_winding: Literal[-1, 1]
         if winding is None:
-            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=guess, param_count=num_components)
-            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=guess, param_count=num_components)
+            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=guess, num_components=num_components)
+            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=guess, num_components=num_components)
             if np.isfinite(pos_res.fun) and (not np.isfinite(neg_res.fun) or pos_res.fun <= neg_res.fun):
                 chosen_winding = 1
                 res = pos_res
@@ -540,9 +541,7 @@ class PSpiralFitter:
         else:
             # Optimize for chosen winding.
             chosen_winding = winding
-            res = self._optimize_parameters(
-                wrap_winding_objective(winding), rng=rng, warm_start=guess, param_count=num_components
-            )
+            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=guess, num_components=num_components)
         if not np.isfinite(res.fun):
             return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
         params: onp.Array2D[np.float64] = np.array(res.x, dtype=np.float64).reshape((num_components, 6))
