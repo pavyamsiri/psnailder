@@ -254,6 +254,7 @@ class PSpiralFitter:
         best_model: PSpiralModel | None = None
 
         converged: bool = False
+        accepted_refinement: bool = False
         num_iterations: int = 0
 
         # Initialize warm start from caller-provided warm_start so we can reuse it.
@@ -347,13 +348,8 @@ class PSpiralFitter:
             # Set the first model
             if initial_model is None:
                 initial_model = current_model
-                # After the first model is constructed, evaluate its likelihood so
-                # comparisons are done against model predictions rather than the
-                # background-only prediction. This prevents the algorithm from
-                # always thinking the model is a large improvement over the
-                # background-only case and unnecessarily updating the background.
-                if best_quality == float("-inf"):
-                    best_quality = ln_likelihood(initial_density, initial_model.prediction(), mask)
+                best_model = current_model
+                best_quality = ln_likelihood(initial_density, initial_model.prediction(), mask)
 
             if not improve_background:
                 best_model = current_model
@@ -374,22 +370,33 @@ class PSpiralFitter:
             # Update background
             current_perturbation = current_model.signal()
             new_background = self._smoothing_func(initial_density / current_perturbation)
-            new_background = new_background / new_background.sum() * initial_density.sum()
-            new_data = current_perturbation * new_background
-            quality = ln_likelihood(initial_density, new_data, mask)
+            new_background: onp.Array2D[np.float64] = new_background / np.sum(new_background) * np.sum(initial_density)
+
+            candidate_model = PSpiralModel(
+                parameters=current_model.parameters,
+                z_mesh=z_mesh,
+                vz_mesh=vz_mesh,
+                background=new_background,
+                winding=best_winding,
+                flattening_strength=current_model.flattening_strength,
+            )
+            candidate_quality = ln_likelihood(
+                initial_density,
+                candidate_model.prediction(),
+                mask,
+            )
 
             # Quality has degraded => we have converged
-            if best_quality > quality:
-                converged = best_model is not None
-                if best_model is None:
-                    best_model = initial_model
+            if candidate_quality < best_quality:
+                converged = accepted_refinement
                 break
 
             # Update best parameters
-            best_quality = quality
-            best_background = new_background
-            best_model = current_model
-            current_warm_start = best_params
+            best_quality = candidate_quality
+            best_background = candidate_model.background
+            best_model = candidate_model
+            current_warm_start = candidate_model.to_array()
+            accepted_refinement = True
 
         assert initial_model is not None
         assert best_model is not None
