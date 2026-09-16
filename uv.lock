@@ -458,6 +458,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "matplotlib" },
     { name = "maturin" },
     { name = "phasmix" },
     { name = "pytest" },
@@ -474,6 +475,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "maturin", specifier = ">=1.13.3" },
     { name = "phasmix", git = "https://github.com/pavyamsiri/phasmix.git" },
     { name = "pytest", specifier = ">=9.0.2" },

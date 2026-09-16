@@ -16,7 +16,6 @@ from .model import PSpiralModel
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
-    from typing import Final
 
     from optype import numpy as onp
 
@@ -126,7 +125,7 @@ class FitProgress:
     model : PSpiralModel
         The current valid model.
     iteration : int
-        The current iteration.
+        The refinement step; zero denotes the initial fit.
     lnl : float
         The log-likelihood.
 
@@ -150,9 +149,9 @@ class PSpiralFitResult:
     data : Array2D[f64]
         The data.
     num_iterations : int
-        The number of iterations taken.
+        The number of background refinement attempts, excluding the initial fit.
     max_iterations : int | None
-        The maximum number of iterations.
+        The maximum number of background refinement attempts, or None for no limit.
     lnl : float
         The log-likelihood.
     reason : FitTerminationReason
@@ -199,6 +198,8 @@ class PSpiralFitter:
         param_lo: onp.Array1D[np.float64] | None = None,
         param_hi: onp.Array1D[np.float64] | None = None,
     ) -> None:
+        if max_iterations is not None and max_iterations < 0:
+            raise ValueError("max_iterations must be nonnegative or None.")
         self._max_iterations: int | None = max_iterations
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
@@ -237,7 +238,7 @@ class PSpiralFitter:
         *,
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
-        seed: int | None = None,
+        rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
     ) -> FitOutcome:
@@ -249,7 +250,7 @@ class PSpiralFitter:
                 vz_bins,
                 winding=winding,
                 warm_start=warm_start,
-                seed=seed,
+                rng=rng,
                 num_components=num_components,
                 improve_background=improve_background,
             )
@@ -267,7 +268,7 @@ class PSpiralFitter:
         *,
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
-        seed: int | None = None,
+        rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
     ) -> Generator[FitEvent]:
@@ -289,7 +290,7 @@ class PSpiralFitter:
             vz_mesh,
             winding=winding,
             warm_start=warm_start,
-            seed=seed,
+            rng=rng,
             num_components=num_components,
             improve_background=improve_background,
         )
@@ -303,7 +304,7 @@ class PSpiralFitter:
         *,
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
-        seed: int | None = None,
+        rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
     ) -> FitOutcome:
@@ -315,7 +316,7 @@ class PSpiralFitter:
                 vz_mesh,
                 winding=winding,
                 warm_start=warm_start,
-                seed=seed,
+                rng=rng,
                 num_components=num_components,
                 improve_background=improve_background,
             )
@@ -333,7 +334,7 @@ class PSpiralFitter:
         *,
         winding: Literal[-1, 1] | None = None,
         warm_start: onp.Array1D[np.float64] | None = None,
-        seed: int | None = None,
+        rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
     ) -> Generator[FitEvent]:
@@ -353,8 +354,9 @@ class PSpiralFitter:
             The winding direction to force if given otherwise it will be automatically determined.
         warm_start : Array1D[f64] | None
             The warm start parameters if given.
-        seed : int | None
-            The random seed for the multi-start draws, or ``None`` for no seed.
+        rng : np.random.Generator | None
+            Random generator shared by selection and refinement. If None, a new
+            generator is created. Pass np.random.default_rng(seed) to reproduce a fit.
         improve_background : bool
             Whether to iteratively improve the background. If ``False``, the
             background is fixed to ``initial_background``.
@@ -372,204 +374,37 @@ class PSpiralFitter:
             msg = "Can not use warm start if the number of component is not set."
             raise ValueError(msg)
 
-        rng = np.random.default_rng(seed)
+        if rng is None:
+            rng = np.random.default_rng()
 
         mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
 
-        best_background: onp.Array2D[np.float64] = initial_background
-        # Initialize best_quality to -inf so that after the first model is found
-        # we compare the model prediction likelihood rather than the background-only likelihood.
-        best_quality: float = float("-inf")
+        initial_fit = self._establish_initial_fit(
+            initial_density,
+            initial_background,
+            mask,
+            z_mesh,
+            vz_mesh,
+            rng=rng,
+            num_components=num_components,
+            guess=warm_start,
+            winding=winding,
+        )
 
-        initial_model: PSpiralModel | None = None
-        current_model: PSpiralModel | None = None
-        best_model: PSpiralModel | None = None
-
-        num_iterations: int = 0
-        reason: FitTerminationReason = FitTerminationReason.ITERATION_LIMIT
-        best_winding: Literal[-1, 1] | None = winding
-
-        # Initialize warm start from caller-provided warm_start so we can reuse it.
-        current_warm_start: onp.Array1D[np.float64] | None = warm_start
-
-        # If num_components is None, compare 1- and 2-component fits using the
-        # initial background only (improve_background=False) and pick the better
-        # model. Continue the rest of the algorithm with that fixed choice.
-        if num_components is None:
-            res1 = self.fit_spiral_with_background(
-                initial_density,
-                initial_background,
-                z_mesh,
-                vz_mesh,
-                winding=winding,
-                warm_start=current_warm_start,
-                seed=seed,
-                num_components=1,
-                improve_background=False,
-            )
-            res2 = self.fit_spiral_with_background(
-                initial_density,
-                initial_background,
-                z_mesh,
-                vz_mesh,
-                winding=winding,
-                warm_start=current_warm_start,
-                seed=seed,
-                num_components=2,
-                improve_background=False,
-            )
-
-            # Both fits failed
-            if isinstance(res1, FitFailure) and isinstance(res2, FitFailure):
-                yield FitFailure(
-                    FitFailureReason.NO_VALID_CANDIDATE, "No valid candidate found for either 1-component and 2-component fits."
-                )
-                return
-            # 1-component fit succeeded while 2-component fit failed
-            elif isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
-                selected = res1.result
-            # 1-component fit failed while 2-component fit succeeded
-            elif isinstance(res1, FitFailure) and isinstance(res2, FitSuccess):
-                selected = res2.result
-            # Both succeeded
-            else:
-                assert isinstance(res1, FitSuccess), "just checked in above branches."
-                assert isinstance(res2, FitSuccess), "just checked in above branches."
-                q1 = ln_likelihood(initial_density, res1.result.final_model.prediction(), mask)
-                q2 = ln_likelihood(initial_density, res2.result.final_model.prediction(), mask)
-                # BIC penalizes the larger model's additional parameters.
-                k1 = 6
-                k2 = 12
-                num_particles = np.sum(initial_density)
-                b1 = k1 * np.log(num_particles) - 2.0 * q1
-                b2 = k2 * np.log(num_particles) - 2.0 * q2
-                selected = res2.result if b2 < b1 else res1.result
-
-            # Selection already found a valid fit; preserve it if refinement fails.
-            initial_model = selected.final_model
-            best_model = selected.final_model
-            best_background = best_model.background
-            best_quality = selected.lnl
-            best_winding = best_model.winding
-            num_components = best_model.parameters.shape[0]
-            current_warm_start = best_model.to_array()
-            if not improve_background:
-                yield FitSuccess(selected)
-                return
-
-        while self._max_iterations is None or (num_iterations < self._max_iterations):
-            num_iterations += 1
-
-            # Number of 6-parameter components to fit
-            param_count: int = num_components
-
-            def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
-                def _objective(parameters: onp.Array1D[np.float64]) -> float:
-                    params = np.array(parameters, dtype=np.float64).reshape((param_count, 6))
-                    model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=current_winding)
-                    return -ln_likelihood(initial_density, model.prediction(), mask)
-
-                return _objective
-
-            # Auto-select winding on first iteration if unset, then optimize for it.
-            res: optimize.OptimizeResult
-            if best_winding is None:
-                pos_res = self._optimize_parameters(
-                    wrap_winding_objective(1), rng=rng, warm_start=current_warm_start, param_count=param_count
-                )
-                neg_res = self._optimize_parameters(
-                    wrap_winding_objective(-1), rng=rng, warm_start=current_warm_start, param_count=param_count
-                )
-                if np.isfinite(pos_res.fun) and (not np.isfinite(neg_res.fun) or pos_res.fun <= neg_res.fun):
-                    best_winding = 1
-                    res = pos_res
-                else:
-                    best_winding = -1
-                    res = neg_res
-            else:
-                # Optimize for chosen winding.
-                res = self._optimize_parameters(
-                    wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
-                )
-
-            if not np.isfinite(res.fun):
-                if best_model is None:
-                    yield FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
-                    return
-                else:
-                    reason = FitTerminationReason.FAILED_REOPTIMIZATION
-                    break
-
-            best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
-            params = best_params.reshape((param_count, 6))
-            current_model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=best_winding)
-
-            # Set the first model
-            if initial_model is None:
-                initial_model = current_model
-                best_model = current_model
-                best_quality = ln_likelihood(initial_density, initial_model.prediction(), mask)
-
-            if not improve_background:
-                best_model = current_model
-                best_quality = -float(res.fun)
-                reason = FitTerminationReason.FIXED_BACKGROUND
-                break
-
-            yield FitProgress(
-                model=current_model,
-                iteration=num_iterations,
-                lnl=-float(res.fun),
-            )
-
-            # Update background
-            current_perturbation = current_model.signal()
-            new_background = self._smoothing_func(initial_density / current_perturbation)
-            new_background: onp.Array2D[np.float64] = new_background / np.sum(new_background) * np.sum(initial_density)
-
-            candidate_model = PSpiralModel(
-                parameters=current_model.parameters,
-                z_mesh=z_mesh,
-                vz_mesh=vz_mesh,
-                background=new_background,
-                winding=best_winding,
-                flattening_strength=current_model.flattening_strength,
-            )
-            candidate_quality = ln_likelihood(
-                initial_density,
-                candidate_model.prediction(),
-                mask,
-            )
-
-            if not np.isfinite(candidate_quality):
-                log.warning("Background refinement produced an invalid prediction.")
-                reason = FitTerminationReason.INVALID_BACKGROUND_UPDATE
-                break
-
-            # Quality has degraded => we have converged
-            if candidate_quality < best_quality:
-                reason = FitTerminationReason.NO_IMPROVEMENT
-                break
-
-            # Update best parameters
-            best_quality = candidate_quality
-            best_background = candidate_model.background
-            best_model = candidate_model
-            current_warm_start = candidate_model.to_array()
-
-        if initial_model is None or best_model is None:
-            yield FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid model was ever found.")
+        # Failed
+        if isinstance(initial_fit, FitFailure):
+            yield initial_fit
             return
-        yield FitSuccess(
-            result=PSpiralFitResult(
-                initial_model=initial_model,
-                final_model=best_model,
-                data=initial_density,
-                num_iterations=num_iterations,
-                max_iterations=self._max_iterations,
-                lnl=best_quality,
-                reason=reason,
-            )
+
+        # Succeeded but no background refinement
+        if not improve_background:
+            yield initial_fit
+            return
+
+        yield from self._refine_background_gen(
+            initial_fit,
+            mask,
+            rng,
         )
 
     def _optimize_parameters(
@@ -585,17 +420,240 @@ class PSpiralFitter:
         base_bounds = list(zip(self._param_lo.tolist(), self._param_hi.tolist(), strict=True))
         bounds = base_bounds * param_count
 
-        nfev = 0
-
-        def counted_objective(parameters: onp.Array1D[np.float64]) -> float:
-            nonlocal nfev
-            nfev += 1
+        def objective(parameters: onp.Array1D[np.float64]) -> float:
             return float(objective_func(parameters))
 
-        res = optimize.differential_evolution(counted_objective, bounds=bounds, x0=warm_start, seed=rng)
+        res = optimize.differential_evolution(objective, bounds=bounds, x0=warm_start, rng=rng)
         if not res.success:
             log.warning("Failed to find maximum likelihood: %s", res.message)
         return res
+
+    def _establish_initial_fit(
+        self,
+        density: onp.Array2D[np.float64],
+        background: onp.Array2D[np.float64],
+        mask: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        *,
+        rng: np.random.Generator,
+        num_components: int | None = None,
+        guess: onp.Array1D[np.float64] | None = None,
+        winding: Literal[-1, 1] | None = None,
+    ) -> FitOutcome:
+        if num_components is not None:
+            return self._fit_with_fixed_background(
+                density,
+                background,
+                mask,
+                z_mesh,
+                vz_mesh,
+                num_components=num_components,
+                rng=rng,
+                guess=guess,
+                winding=winding,
+            )
+
+        res1 = self._fit_with_fixed_background(
+            density,
+            background,
+            mask,
+            z_mesh,
+            vz_mesh,
+            num_components=1,
+            rng=rng,
+            guess=guess,
+            winding=winding,
+        )
+        res2 = self._fit_with_fixed_background(
+            density,
+            background,
+            mask,
+            z_mesh,
+            vz_mesh,
+            num_components=2,
+            rng=rng,
+            guess=guess,
+            winding=winding,
+        )
+
+        # Both fits failed
+        if isinstance(res1, FitFailure) and isinstance(res2, FitFailure):
+            return FitFailure(
+                FitFailureReason.NO_VALID_CANDIDATE, "No valid candidate found for either 1-component and 2-component fits."
+            )
+        # 1-component fit succeeded while 2-component fit failed
+        elif isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
+            selected = res1.result
+        # 1-component fit failed while 2-component fit succeeded
+        elif isinstance(res1, FitFailure) and isinstance(res2, FitSuccess):
+            selected = res2.result
+        # Both succeeded
+        else:
+            assert isinstance(res1, FitSuccess), "just checked in above branches."
+            assert isinstance(res2, FitSuccess), "just checked in above branches."
+            q1 = ln_likelihood(density, res1.result.final_model.prediction(), mask)
+            q2 = ln_likelihood(density, res2.result.final_model.prediction(), mask)
+            # BIC penalizes the larger model's additional parameters.
+            k1 = 6
+            k2 = 12
+            num_particles = np.sum(density)
+            b1 = k1 * np.log(num_particles) - 2.0 * q1
+            b2 = k2 * np.log(num_particles) - 2.0 * q2
+            selected = res2.result if b2 < b1 else res1.result
+
+        return FitSuccess(selected)
+
+    def _fit_with_fixed_background(
+        self,
+        density: onp.Array2D[np.float64],
+        background: onp.Array2D[np.float64],
+        mask: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+        *,
+        num_components: int,
+        rng: np.random.Generator,
+        guess: onp.Array1D[np.float64] | None = None,
+        winding: Literal[-1, 1] | None = None,
+    ) -> FitOutcome:
+        def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
+            def _objective(parameters: onp.Array1D[np.float64]) -> float:
+                params = np.array(parameters, dtype=np.float64).reshape((num_components, 6))
+                model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=current_winding)
+                return -ln_likelihood(density, model.prediction(), mask)
+
+            return _objective
+
+        res: optimize.OptimizeResult
+        chosen_winding: Literal[-1, 1]
+        if winding is None:
+            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, warm_start=guess, param_count=num_components)
+            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, warm_start=guess, param_count=num_components)
+            if np.isfinite(pos_res.fun) and (not np.isfinite(neg_res.fun) or pos_res.fun <= neg_res.fun):
+                chosen_winding = 1
+                res = pos_res
+            else:
+                chosen_winding = -1
+
+                res = neg_res
+        else:
+            # Optimize for chosen winding.
+            chosen_winding = winding
+            res = self._optimize_parameters(
+                wrap_winding_objective(winding), rng=rng, warm_start=guess, param_count=num_components
+            )
+        if not np.isfinite(res.fun):
+            return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
+        params: onp.Array2D[np.float64] = np.array(res.x, dtype=np.float64).reshape((num_components, 6))
+        model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
+        return FitSuccess(
+            PSpiralFitResult(
+                initial_model=model,
+                final_model=model,
+                data=density,
+                num_iterations=0,
+                max_iterations=self._max_iterations,
+                lnl=-float(res.fun),
+                reason=FitTerminationReason.FIXED_BACKGROUND,
+            )
+        )
+
+    def _refine_background_gen(
+        self, initial_fit: FitSuccess, mask: onp.Array2D[np.float64], rng: np.random.Generator
+    ) -> Generator[FitSuccess | FitProgress]:
+        # Yield the initial fit
+        initial_model: PSpiralModel = initial_fit.result.final_model
+        initial_lnl: float = initial_fit.result.lnl
+        z_mesh: onp.Array2D[np.float64] = initial_model.z_mesh
+        vz_mesh: onp.Array2D[np.float64] = initial_model.vz_mesh
+        num_components: int = initial_fit.result.final_model.num_components
+        accepted: tuple[PSpiralModel, float] = (initial_model, initial_lnl)
+        yield FitProgress(model=initial_model, lnl=initial_lnl, iteration=0)
+
+        num_iterations: int = 0
+        initial_density: Final[onp.Array2D[np.float64]] = initial_fit.result.data
+        initial_density_norm = np.sum(initial_density)
+        while self._max_iterations is None or (num_iterations < self._max_iterations):
+            num_iterations += 1
+
+            current_model, current_lnl = accepted
+            current_perturbation = current_model.signal()
+            new_background = self._smoothing_func(initial_density / current_perturbation)
+            new_background: onp.Array2D[np.float64] = new_background / np.sum(new_background) * initial_density_norm
+
+            if np.any(~np.isfinite(new_background)):
+                yield FitSuccess(
+                    result=PSpiralFitResult(
+                        initial_model=initial_model,
+                        final_model=current_model,
+                        lnl=current_lnl,
+                        data=initial_density,
+                        num_iterations=num_iterations,
+                        max_iterations=self._max_iterations,
+                        reason=FitTerminationReason.INVALID_BACKGROUND_UPDATE,
+                    )
+                )
+                return
+
+            candidate = self._fit_with_fixed_background(
+                initial_density,
+                new_background,
+                mask,
+                z_mesh,
+                vz_mesh,
+                num_components=num_components,
+                rng=rng,
+                guess=current_model.parameters.flatten(),
+                winding=initial_model.winding,
+            )
+
+            if isinstance(candidate, FitFailure):
+                yield FitSuccess(
+                    PSpiralFitResult(
+                        initial_model=initial_model,
+                        final_model=current_model,
+                        lnl=current_lnl,
+                        data=initial_density,
+                        num_iterations=num_iterations,
+                        max_iterations=self._max_iterations,
+                        reason=FitTerminationReason.FAILED_REOPTIMIZATION,
+                    )
+                )
+                return
+
+            # New lnl worse or equal to currently accepted lnl
+            if candidate.result.lnl <= current_lnl:
+                yield FitSuccess(
+                    PSpiralFitResult(
+                        initial_model=initial_model,
+                        final_model=current_model,
+                        lnl=current_lnl,
+                        data=initial_density,
+                        num_iterations=num_iterations,
+                        max_iterations=self._max_iterations,
+                        reason=FitTerminationReason.NO_IMPROVEMENT,
+                    )
+                )
+                return
+
+            accepted = (candidate.result.final_model, candidate.result.lnl)
+            yield FitProgress(
+                model=candidate.result.final_model,
+                iteration=num_iterations,
+                lnl=candidate.result.lnl,
+            )
+        yield FitSuccess(
+            PSpiralFitResult(
+                initial_model=initial_model,
+                final_model=accepted[0],
+                lnl=accepted[1],
+                data=initial_density,
+                num_iterations=num_iterations,
+                max_iterations=self._max_iterations,
+                reason=FitTerminationReason.ITERATION_LIMIT,
+            )
+        )
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:

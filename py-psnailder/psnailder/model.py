@@ -92,6 +92,10 @@ class PSpiralModel:
             for i in range(self.parameters.shape[0])
         )
 
+    @property
+    def num_components(self) -> int:
+        return self.parameters.shape[0]
+
     def to_array(self) -> onp.Array1D[np.float64]:
         """Return flattened parameter vector (n_components * 6,)."""
         return np.asarray(self.parameters, dtype=np.float64).ravel()

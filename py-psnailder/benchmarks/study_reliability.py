@@ -46,9 +46,11 @@ def run_study():
     print("-" * 60)
 
     # 1. Python DE (Baseline)
-    fitter_py = PSpiralFitterPython(max_iterations=1)  # Single iteration for pure global search check
+    fitter_py = PSpiralFitterPython(max_iterations=0)  # Initial fit only; no background refinement.
     start = time.perf_counter()
-    res_py = fitter_py.fit_spiral_with_background(density, initial_background, x_mesh, y_mesh, improve_background=False)
+    res_py = fitter_py.fit_spiral_with_background(
+        density, initial_background, x_mesh, y_mesh, improve_background=False, rng=np.random.default_rng(1)
+    )
     elapsed = time.perf_counter() - start
     from psnailder.fit import FitFailure
 
