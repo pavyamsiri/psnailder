@@ -364,6 +364,10 @@ class PSpiralFitter:
                     wrap_winding_objective(best_winding), rng=rng, warm_start=current_warm_start, param_count=param_count
                 )
 
+            if not np.isfinite(res.fun):
+                msg = "Optimization found no valid candidate."
+                raise RuntimeError(msg)
+
             best_params: onp.Array1D[np.float64] = np.array(res.x, dtype=np.float64)
             params = best_params.reshape((param_count, 6))
             current_model = PSpiralModel(params, z_mesh, vz_mesh, best_background, winding=best_winding)
@@ -408,6 +412,10 @@ class PSpiralFitter:
                 candidate_model.prediction(),
                 mask,
             )
+
+            if not np.isfinite(candidate_quality):
+                log.warning("Background refinement produced an invalid prediction.")
+                break
 
             # Quality has degraded => we have converged
             if candidate_quality < best_quality:
