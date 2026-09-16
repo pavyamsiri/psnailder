@@ -98,12 +98,29 @@ class PSpiralFitter:
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
 
-        self._param_lo: onp.Array1D[np.float64] = param_lo if param_lo is not None else _DEFAULT_PARAM_LO
-        self._param_hi: onp.Array1D[np.float64] = param_hi if param_hi is not None else _DEFAULT_PARAM_HI
+        self._param_lo: onp.Array1D[np.float64] = np.copy(param_lo if param_lo is not None else _DEFAULT_PARAM_LO).astype(
+            np.float64
+        )
+        self._param_hi: onp.Array1D[np.float64] = np.copy(param_hi if param_hi is not None else _DEFAULT_PARAM_HI).astype(
+            np.float64
+        )
+
+        # Check shapes
+        if self._param_lo.shape != (6,) or self._param_hi.shape != (6,):
+            msg = "Parameter bounds must each have shape (6,)."
+            raise ValueError(msg)
 
         # Replace nans with default values
         self._param_lo[np.isnan(self._param_lo)] = _DEFAULT_PARAM_LO[np.isnan(self._param_lo)]
         self._param_hi[np.isnan(self._param_hi)] = _DEFAULT_PARAM_HI[np.isnan(self._param_hi)]
+
+        # Validate bounds
+        if not (np.all(np.isfinite(self._param_lo)) and np.all(np.isfinite(self._param_hi))):
+            msg = "Parameter bounds must be finite."
+            raise ValueError(msg)
+        if np.any(self._param_lo > self._param_hi):
+            msg = "Lower bounds must not exceed upper bounds."
+            raise ValueError(msg)
 
     def fit_spiral(
         self,

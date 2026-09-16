@@ -11,7 +11,86 @@ from optype import numpy as onp
 from scipy.optimize import OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
-from psnailder.fit import PSpiralFitter
+from psnailder.fit import PSpiralFitter, _DEFAULT_PARAM_HI, _DEFAULT_PARAM_LO
+
+
+def test_bounds_preserve_caller_arrays_and_resolve_defaults() -> None:
+    """NaN replacement preserves inputs and retains explicit endpoints."""
+    lower = np.array([0.2, np.nan, np.nan, -1.0, np.nan, np.nan])
+    upper = np.array([0.8, np.nan, np.nan, 1.0, np.nan, np.nan])
+    original_lower = lower.copy()
+    original_upper = upper.copy()
+
+    fitter = PSpiralFitter(param_lo=lower, param_hi=upper)
+
+    np.testing.assert_array_equal(lower, original_lower)
+    np.testing.assert_array_equal(upper, original_upper)
+    np.testing.assert_array_equal(fitter._param_lo, [0.2, 0.005, 0.0, -1.0, 30.0, 0.0])
+    np.testing.assert_array_equal(fitter._param_hi, [0.8, 0.1, 0.004, 1.0, 70.0, 0.18])
+
+    lower[:] = -100.0
+    upper[:] = 100.0
+    np.testing.assert_array_equal(fitter._param_lo, [0.2, 0.005, 0.0, -1.0, 30.0, 0.0])
+    np.testing.assert_array_equal(fitter._param_hi, [0.8, 0.1, 0.004, 1.0, 70.0, 0.18])
+
+
+def test_default_bounds_are_independent() -> None:
+    """Each fitter owns bounds separate from other instances and defaults."""
+    first = PSpiralFitter()
+    second = PSpiralFitter()
+
+    for first_bounds, second_bounds, defaults in (
+        (first._param_lo, second._param_lo, _DEFAULT_PARAM_LO),
+        (first._param_hi, second._param_hi, _DEFAULT_PARAM_HI),
+    ):
+        np.testing.assert_array_equal(first_bounds, defaults)
+        np.testing.assert_array_equal(second_bounds, defaults)
+        assert not np.shares_memory(first_bounds, second_bounds)
+        assert not np.shares_memory(first_bounds, defaults)
+        assert not np.shares_memory(second_bounds, defaults)
+
+
+@pytest.mark.parametrize("lower", [True, False], ids=["lower", "upper"])
+@pytest.mark.parametrize("shape", [(), (0,), (5,), (7,), (1, 6), (6, 1)])
+def test_bounds_reject_invalid_shapes(lower: bool, shape: tuple[int, ...]) -> None:
+    # NaNs also ensure shape validation happens before default substitution.
+    invalid = np.full(shape, np.nan)
+    with pytest.raises(ValueError, match=r"shape \(6,\)"):
+        PSpiralFitter(param_lo=invalid if lower else None, param_hi=None if lower else invalid)
+
+
+@pytest.mark.parametrize("lower", [True, False], ids=["lower", "upper"])
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_bounds_reject_infinite_endpoints(lower: bool, value: float) -> None:
+    invalid = np.full(6, np.nan)
+    invalid[0] = value
+    with pytest.raises(ValueError, match="must be finite"):
+        PSpiralFitter(param_lo=invalid if lower else None, param_hi=None if lower else invalid)
+
+
+@pytest.mark.parametrize("index", range(6))
+def test_bounds_reject_reversed_endpoints(index: int) -> None:
+    lower = _DEFAULT_PARAM_LO.copy()
+    upper = _DEFAULT_PARAM_HI.copy()
+    lower[index] = upper[index] + 1.0
+    with pytest.raises(ValueError, match="Lower bounds must not exceed upper bounds"):
+        PSpiralFitter(param_lo=lower, param_hi=upper)
+
+
+def test_bounds_validate_order_after_resolving_defaults() -> None:
+    lower = np.full(6, np.nan)
+    upper = np.full(6, np.nan)
+    upper[0] = -1.0  # Conflicts with the default lower alpha bound of zero.
+    with pytest.raises(ValueError, match="Lower bounds must not exceed upper bounds"):
+        PSpiralFitter(param_lo=lower, param_hi=upper)
+
+
+def test_bounds_accept_equal_endpoints() -> None:
+    parameters = np.array([0.5, 0.05, 0.002, 0.0, 40.0, 0.09])
+    fitter = PSpiralFitter(param_lo=parameters, param_hi=parameters)
+    np.testing.assert_array_equal(fitter._param_lo, parameters)
+    np.testing.assert_array_equal(fitter._param_hi, parameters)
+    assert not np.shares_memory(fitter._param_lo, fitter._param_hi)
 
 
 @pytest.mark.parametrize("num_components", [1, 2])
