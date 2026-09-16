@@ -421,6 +421,17 @@ class PSpiralFitter:
         hi = np.tile(self._param_hi, num_components)
         bounds = optimize.Bounds(lo, hi)
 
+        if guess is not None:
+            clamped = np.clip(guess, lo, hi)
+            out_of_bounds = int(np.count_nonzero(clamped != guess))
+            if out_of_bounds:
+                log.warning(
+                    "Initial guess had %d of %d parameters outside bounds; clamping.",
+                    out_of_bounds,
+                    guess.size,
+                )
+            guess = clamped
+
         def objective(parameters: onp.Array1D[np.float64]) -> float:
             return float(objective_func(parameters))
 
