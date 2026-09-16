@@ -57,26 +57,24 @@ class PSpiralModel:
         r = np.hypot(z, scaled_vz)
         theta = np.arctan2(vz, z * scale)
 
-        # spiral phase: handle c != 0 and c == 0 (vectorised, avoid dividing by zero)
+        # Match Rust's magnitude convention and near-zero linear branch.
         phase = np.empty_like(r)
         abs_b = np.abs(b)
         abs_c = np.abs(c)
         c_mask = abs_c[:, 0, 0] > 1e-10
 
-        # Compute for components where c != 0 using boolean indexing
+        # Quadratic branch for abs(c) > 1e-10.
         half = 0.5 * abs_b[c_mask] / abs_c[c_mask]
         phase[c_mask] = -half + np.sqrt(np.square(half) + r[c_mask] / abs_c[c_mask])
 
-        # For components where c == 0, use r / b
+        # Linear branch for abs(c) <= 1e-10.
         phase[~c_mask] = r[~c_mask] / abs_b[~c_mask]
 
         flattening = special.expit((r - rho) / self.flattening_strength)
         pert = 1.0 + alphas * flattening * np.cos(self.winding * theta - phase - theta0)
 
         # Combine components by taking the pixelwise maximum across components
-        signal = np.max(pert, axis=0)
-        signal[~np.isfinite(signal)] = 1.0
-        return signal
+        return np.max(pert, axis=0)
 
     def pvalue(self, data: onp.Array2D[np.float64], mask: onp.Array2D[np.float64]) -> float:
         assert self.z_mesh.ndim == 2
@@ -90,7 +88,8 @@ class PSpiralModel:
     def components(self) -> Sequence[PSpiralComponent]:
         """Compatibility: materialize components from parameters."""
         return tuple(
-            PSpiralComponent.from_array(self.parameters[i], winding=self.winding) for i in range(self.parameters.shape[0])
+            PSpiralComponent.from_array(self.parameters[i], flattening_strength=self.flattening_strength, winding=self.winding)
+            for i in range(self.parameters.shape[0])
         )
 
     def to_array(self) -> onp.Array1D[np.float64]:

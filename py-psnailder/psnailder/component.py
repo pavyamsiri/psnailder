@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, override
 
 from scipy import special
 import numpy as np
@@ -22,9 +22,10 @@ class PSpiralComponent:
     alpha : float
         The spiral amplitude.
     b : float
-        The linear winding amplitude.
+        The linear winding amplitude, evaluated using its absolute value.
     c : float
-        The quadratic winding amplitude.
+        The quadratic winding amplitude, evaluated using its absolute value.
+        Magnitudes at or below 1e-10 use the linear phase relation.
     theta0 : float
         The angle offset in radians.
     scale_factor : float
@@ -94,13 +95,13 @@ class PSpiralComponent:
             The spiral phase in radians.
 
         """
-        b_val: np.float64 = np.float64(self.b)
-        c_val: np.float64 = np.float64(self.c)
-        # phi_s(r) = (+/-) (-b/2c + sqrt((b/2c)^2 + r/c))
-        if c_val != 0.0:
+        b_val: np.float64 = np.float64(abs(self.b))
+        c_val: np.float64 = np.float64(abs(self.c))
+        # Match Rust: coefficient magnitudes set phase; winding sets direction.
+        if c_val > 1e-10:
             half_b_over_c = 0.5 * b_val / c_val
             phase = -half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val)
-        # phi_s(r) = (+/-) r / b
+        # Linear branch, including near-zero quadratic coefficients.
         else:
             phase = r / b_val
         return verify_array_shape(phase, r.shape)
@@ -119,17 +120,23 @@ class PSpiralComponent:
             The model phase angle in radians.
 
         """
-        phase = float(self.spiral_phase(np.array(r_test))[0])
+        phase = float(self.spiral_phase(np.array(r_test)))
         return phase + self.theta0
 
     @staticmethod
-    def from_array(parameters: onp.Array1D[np.float64], *, winding: Literal[1, -1]) -> PSpiralComponent:
+    def from_array(
+        parameters: onp.Array1D[np.float64], *, flattening_strength: float, winding: Literal[1, -1]
+    ) -> PSpiralComponent:
         """Convert an array of parameters into a spiral component.
 
         Parameters
         ----------
         parameters : Array1D[f64]
             The parameters array in the form [alpha, b, c, theta0, scale_factor, rho].
+        flattening_strength : float
+            The flattening strength.
+        winding : Literal[-1, 1]
+            The winding.
 
         Returns
         -------
@@ -147,6 +154,7 @@ class PSpiralComponent:
             theta0=parameters[3],
             scale_factor=parameters[4],
             rho=parameters[5],
+            flattening_strength=flattening_strength,
             winding=winding,
         )
 
@@ -161,6 +169,7 @@ class PSpiralComponent:
         """
         return np.array([self.alpha, self.b, self.c, self.theta0, self.scale_factor, self.rho], dtype=np.float64)
 
+    @override
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -174,6 +183,7 @@ class PSpiralComponent:
             f"flattening_strength={self.flattening_strength!r})"
         )
 
+    @override
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
