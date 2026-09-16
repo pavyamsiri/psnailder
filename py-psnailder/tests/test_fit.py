@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -11,6 +12,57 @@ from scipy.optimize import OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
 from psnailder.fit import PSpiralFitter
+
+
+@pytest.mark.parametrize("num_components", [1, 2])
+def test_warm_start_forwarded_to_differential_evolution(num_components: int) -> None:
+    """The public fit API passes the full initial guess to SciPy's x0."""
+    parameters = np.tile([0.0, 0.05, 0.002, 0.0, 40.0, 0.09], num_components)
+    data = np.ones((2, 2))
+    mesh = np.zeros_like(data)
+    fitter = PSpiralFitter(max_iterations=1)
+    optimizer_result = OptimizeResult(x=parameters.copy(), fun=0.0, success=True)
+
+    with patch("psnailder.fit.optimize.differential_evolution", return_value=optimizer_result) as optimizer:
+        result = fitter.fit_spiral_with_background(
+            data,
+            data.copy(),
+            mesh,
+            mesh,
+            warm_start=parameters,
+            num_components=num_components,
+            winding=1,
+            improve_background=False,
+        )
+
+    optimizer.assert_called_once()
+    assert optimizer.call_args is not None
+    np.testing.assert_array_equal(optimizer.call_args.kwargs["x0"], parameters)
+    np.testing.assert_array_equal(result.final_model.to_array(), parameters)
+
+
+@pytest.mark.parametrize("num_components", [1, 2])
+def test_warm_start_rejected_with_automatic_component_selection(num_components: int) -> None:
+    """Neither a six- nor twelve-parameter guess can select a component count."""
+    parameters = np.tile([0.0, 0.05, 0.002, 0.0, 40.0, 0.09], num_components)
+    data = np.ones((2, 2))
+    mesh = np.zeros_like(data)
+    fitter = PSpiralFitter(max_iterations=1)
+
+    with patch("psnailder.fit.optimize.differential_evolution") as optimizer:
+        with pytest.raises(ValueError, match="warm start.*component"):
+            fitter.fit_spiral_with_background(
+                data,
+                data.copy(),
+                mesh,
+                mesh,
+                warm_start=parameters,
+                num_components=None,
+                winding=1,
+                improve_background=False,
+            )
+
+    optimizer.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -108,7 +108,7 @@ def _main() -> None:
     print(f"Rust pvalue : {res_rust.final_pvalue}")
 
     print("\n--- Python Version ---")
-    fitter_py = PSpiralFitterPython(num_starts=20, max_iterations=10)
+    fitter_py = PSpiralFitterPython(max_iterations=10)
     start_time = time.perf_counter()
     res_py = fitter_py.fit_spiral_with_background(
         density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import numpy as np
-from scipy import ndimage, special, optimize
+from scipy import ndimage, optimize, special
 
 from ._background_utils import generate_initial_background
 from ._likelihood_utils import ln_likelihood
@@ -25,6 +26,8 @@ type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], on
 
 _DEFAULT_PARAM_LO: onp.Array1D[np.float64] = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
 _DEFAULT_PARAM_HI: onp.Array1D[np.float64] = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
+
+log: Final[logging.Logger] = logging.getLogger(__name__)
 
 __all__: Final[list[str]] = [
     "PSpiralFitResult",
@@ -84,7 +87,6 @@ class PSpiralFitter:
     def __init__(
         self,
         *,
-        num_starts: int = 20,
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         mask_func: _MaskFunc | None = None,
@@ -92,7 +94,6 @@ class PSpiralFitter:
         param_hi: onp.Array1D[np.float64] | None = None,
     ) -> None:
         self._max_iterations: int | None = max_iterations
-        self._num_starts: int = num_starts
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
@@ -240,6 +241,11 @@ class PSpiralFitter:
             The fit at each iteration.
 
         """
+        # If given a warm start, the number of components must be explicitly set.
+        if warm_start is not None and num_components is None:
+            msg = "Can not use warm start if the number of component is not set."
+            raise ValueError(msg)
+
         rng = np.random.default_rng(seed)
 
         mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
@@ -430,7 +436,9 @@ class PSpiralFitter:
             nfev += 1
             return float(objective_func(parameters))
 
-        res = optimize.differential_evolution(counted_objective, bounds=bounds, seed=rng)
+        res = optimize.differential_evolution(counted_objective, bounds=bounds, x0=warm_start, seed=rng)
+        if not res.success:
+            log.warning("Failed to find maximum likelihood: %s", res.message)
         return res
 
 
