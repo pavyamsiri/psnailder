@@ -422,7 +422,8 @@ class PSpiralFitter:
         bounds = optimize.Bounds(lo, hi)
 
         if guess is not None:
-            clamped = np.clip(guess, lo, hi)
+            eps = 1e-12 * (hi - lo)
+            clamped = np.clip(guess, lo + eps, hi - eps)
             out_of_bounds = int(np.count_nonzero(clamped != guess))
             if out_of_bounds:
                 log.warning(
