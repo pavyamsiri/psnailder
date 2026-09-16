@@ -220,6 +220,181 @@ impl CostFunction for PSpiralModelProblem<'_, 2> {
 mod tests {
     use super::*;
 
+    fn fixed_signal_fitter<const N: usize>() -> PSpiralFitterND<N> {
+        // Fixed zero amplitude makes every prediction equal its background.
+        // Exercise the real optimizer without depending on parameter recovery.
+        PSpiralFitterND {
+            tiktak: TikTak::new(1, 0.25, 0.1, 0.995),
+            alpha_bounds: (0.0, 0.0),
+            b_bounds: (0.05, 0.05),
+            c_bounds: (0.002, 0.002),
+            theta0_bounds: (0.0, 0.0),
+            scale_factor_bounds: (40.0, 40.0),
+            rho_bounds: (0.09, 0.09),
+        }
+    }
+
+    fn refinement_fitter(max_iterations: usize, smoothing_sigma: f64) -> PSpiralFitter {
+        PSpiralFitter {
+            fitter_single: fixed_signal_fitter(),
+            fitter_double: fixed_signal_fitter(),
+            max_iterations: Some(max_iterations),
+            smoothing_sigma,
+        }
+    }
+
+    fn assert_consistent_result(result: &PSpiralFitResult, coordinates: &[f64], mask: &[f64]) {
+        for (model, background, score) in [
+            (
+                &result.initial_model,
+                &result.initial_background,
+                result.initial_lnl,
+            ),
+            (
+                &result.final_model,
+                &result.final_background,
+                result.final_lnl,
+            ),
+        ] {
+            let mut prediction = vec![0.0; coordinates.len()];
+            model.perturbation_vec(coordinates, coordinates, &mut prediction);
+            for (value, background) in prediction.iter_mut().zip(background.iter()) {
+                *value *= background;
+            }
+            let recomputed = ln_likelihood(&result.data, &prediction, mask);
+            assert!(score.is_finite());
+            assert!(
+                (score - recomputed).abs() < 1e-12,
+                "stored {score}, recomputed {recomputed}"
+            );
+        }
+    }
+
+    #[test]
+    fn refinement_accepts_update_at_iteration_limit() {
+        let data = [1.0, 3.0, 2.0, 4.0, 2.0, 3.0];
+        let background = [2.5; 6];
+        let coordinates = [0.1; 6];
+        let mask = [1.0; 6];
+        let fitter = refinement_fitter(1, 0.0);
+        for count in [1, 2] {
+            let mut iter = fitter.fit_spiral_with_background_iterative(
+                &data,
+                &background,
+                &mask,
+                &coordinates,
+                &coordinates,
+                (2, 3),
+                Some(count),
+                Some(Winding::Positive),
+                true,
+            );
+            let result = iter.next().unwrap();
+            assert_consistent_result(&result, &coordinates, &mask);
+            assert_eq!(&*result.final_background, &data);
+            assert_eq!(&*result.initial_background, &background);
+            assert_eq!(result.final_model.components.len(), count);
+            assert_eq!(result.num_iterations, 1);
+            assert!(!result.converged);
+            assert!(result.final_lnl > result.initial_lnl);
+            assert!(iter.next().is_none());
+            assert!(iter.next().is_none());
+        }
+    }
+
+    #[test]
+    fn refinement_rejects_first_update() {
+        let data = [1.0, 3.0, 2.0, 4.0, 2.0, 3.0];
+        let coordinates = [0.1; 6];
+        let mask = [1.0; 6];
+        let fitter = refinement_fitter(3, 1.0);
+        for count in [1, 2] {
+            let mut iter = fitter.fit_spiral_with_background_iterative(
+                &data,
+                &data,
+                &mask,
+                &coordinates,
+                &coordinates,
+                (2, 3),
+                Some(count),
+                Some(Winding::Positive),
+                true,
+            );
+            let result = iter.next().unwrap();
+            assert_consistent_result(&result, &coordinates, &mask);
+            assert_eq!(&*result.final_background, &data);
+            assert_eq!(result.num_iterations, 1);
+            assert!(!result.converged);
+            assert!(iter.next().is_none());
+        }
+    }
+
+    #[test]
+    fn refinement_retains_accepted_state_after_rejection() {
+        let data = [1.0, 3.0, 2.0, 4.0, 2.0, 3.0];
+        let background = [2.5; 6];
+        let coordinates = [0.1; 6];
+        let mask = [1.0; 6];
+        let fitter = refinement_fitter(3, 0.0);
+        for count in [1, 2] {
+            let mut iter = fitter.fit_spiral_with_background_iterative(
+                &data,
+                &background,
+                &mask,
+                &coordinates,
+                &coordinates,
+                (2, 3),
+                Some(count),
+                Some(Winding::Positive),
+                true,
+            );
+            let accepted = iter.next().unwrap();
+            assert_eq!(&*accepted.final_background, &data);
+            assert!(!accepted.converged);
+            // Force a worse proposal next: smoothing moves away from the
+            // exact fit. Only the proposal changes, not the accepted state.
+            iter.smoothing_sigma = 1.0;
+            let rejected = iter.next().unwrap();
+            assert_consistent_result(&accepted, &coordinates, &mask);
+            assert_consistent_result(&rejected, &coordinates, &mask);
+            assert_eq!(&*rejected.final_background, &data);
+            assert_eq!(&*accepted.initial_background, &background);
+            assert_eq!(rejected.final_lnl, accepted.final_lnl);
+            assert_eq!(rejected.num_iterations, 2);
+            assert!(rejected.converged);
+            assert!(iter.next().is_none());
+        }
+    }
+
+    #[test]
+    fn fixed_background_fit_skips_refinement() {
+        let data = [1.0, 3.0, 2.0, 4.0, 2.0, 3.0];
+        let background = [2.5; 6];
+        let coordinates = [0.1; 6];
+        let mask = [1.0; 6];
+        let fitter = refinement_fitter(3, 0.0);
+        for count in [1, 2] {
+            let mut iter = fitter.fit_spiral_with_background_iterative(
+                &data,
+                &background,
+                &mask,
+                &coordinates,
+                &coordinates,
+                (2, 3),
+                Some(count),
+                Some(Winding::Positive),
+                false,
+            );
+            let result = iter.next().unwrap();
+            assert_consistent_result(&result, &coordinates, &mask);
+            assert_eq!(&*result.final_background, &background);
+            assert_eq!(result.final_lnl, result.initial_lnl);
+            assert_eq!(result.num_iterations, 1);
+            assert!(result.converged);
+            assert!(iter.next().is_none());
+        }
+    }
+
     #[test]
     fn objectives_reject_nonfinite_predictions() {
         let data = [2.0; 7];
