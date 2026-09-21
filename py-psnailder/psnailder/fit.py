@@ -497,6 +497,124 @@ class ParameterBounds:
         return Interval(lower, upper)
 
 
+@dataclass(frozen=True)
+class _ParameterLayout:
+    """The parameter layout.
+
+    Mostly a helper to convert between arrays of free parameters and the full parameter array.
+
+    Attributes
+    ----------
+    template : Array1D[f64]
+        An array of the full parameter set.
+        Fixed values are set in their respective slot while non-fixed values will be overwritten.
+    free_indices : Array1D[intp]
+        The indices of the free parameters.
+    lower : Array1D[f64]
+        The lower bounds of the free parameters.
+    upper  : Array1D[f64]
+        The upper bounds of the free parameters.
+
+    """
+
+    template: onp.Array1D[np.float64]
+    free_indices: onp.Array1D[np.intp]
+    lower: onp.Array1D[np.float64]
+    upper: onp.Array1D[np.float64]
+
+    def __post_init__(self) -> None:
+        """Validate the bounds and free indices."""
+
+        num_total_parameters = len(self.template)
+        num_free_parameters = len(self.free_indices)
+        if num_free_parameters > num_total_parameters:
+            msg = "The number of free parameters must not exceed the number of total parameters."
+            raise ValueError(msg)
+
+        if np.max(self.free_indices) >= len(self.template):
+            msg = "The free parameter indices must not point past the number of total parameters."
+            raise ValueError(msg)
+
+        if np.min(self.free_indices) < 0:
+            msg = "The free parameter indices must not be negative."
+            raise ValueError(msg)
+
+        lower, upper = self.lower, self.upper
+
+        num_lower_bounds = len(lower)
+        num_upper_bounds = len(upper)
+        if num_lower_bounds != num_upper_bounds or num_lower_bounds != num_free_parameters:
+            msg = "The number of free parameters must be equal to the number of lower and upper bounds."
+            raise ValueError(msg)
+
+        has_invalid_bounds = np.any(lower > upper)
+        if has_invalid_bounds:
+            msg = "Lower bounds must not exceed upper bounds."
+            raise ValueError(msg)
+
+    @property
+    def num_free(self) -> int:
+        """int: The number of free parameters."""
+        return len(self.free_indices)
+
+    def pack(self, full_parameters: onp.Array1D[np.float64], *, eps: float = 1e-12) -> onp.Array1D[np.float64]:
+        """Pack an array of the full parameter set into an array of just the free parameters.
+
+        The values are also clamped to be within the bounds +- a small epsilon.
+
+        Parameters
+        ----------
+        full_parameters : Array1D[f64]
+            The full parameter array.
+        eps : float
+            The ratio of the parameter bounds' width to be used to calculate the small epsilon.
+
+        Returns
+        -------
+        free_parameters : Array1D[f64]
+            The full parameter array stripped of any fixed values.
+
+        Notes
+        -----
+        The values at indices where the parameter is fixed are not validated in anyway and are
+        simply just discarded.
+
+        """
+
+        if len(full_parameters) != len(self.template):
+            msg = f"Expected the number of full parameters to be {len(self.template)}."
+            raise ValueError(msg)
+
+        values: onp.Array1D[np.float64] = full_parameters[self.free_indices]
+        width: onp.Array1D[np.float64] = self.upper - self.lower
+        clamped = np.clip(values, self.lower + eps * width, self.upper - eps * width)
+        return clamped
+
+    def unpack(self, free_parameters: onp.Array1D[np.float64]) -> onp.Array1D[np.float64]:
+        """Unpack an array of the free parameter set into an array of the full parameter set.
+
+        Parameters
+        ----------
+        free_parameters : Array1D[f64]
+            The free parameter array.
+
+        Returns
+        -------
+        full_parameters : Array1D[f64]
+            An expanded array of the full parameters.
+
+        """
+
+        num_free_parameters = self.num_free
+        if len(free_parameters) != num_free_parameters:
+            msg = f"Expected the number of free parameters to be {num_free_parameters}"
+            raise ValueError(msg)
+
+        full_parameters = np.copy(self.template)
+        full_parameters[self.free_indices] = free_parameters
+        return full_parameters
+
+
 class PSpiralFitter:
     """A configuration of the spiral fitting algorithm."""
 
