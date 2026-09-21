@@ -454,35 +454,45 @@ class ParameterBounds:
             raise ValueError(msg)
 
     @staticmethod
-    def _normalize_angle(name: str, bound: Interval | Fixed) -> Interval | Fixed:
-        """Normalize angle bounds into the range [-pi, +pi].
+    def _normalize_angle(
+        name: str,
+        bound: Interval | Fixed,
+    ) -> Interval | Fixed:
+        """Normalize angles in a bound to be within [-pi, pi].
 
         Parameters
         ----------
         name : str
-            The name of the parameter bounds.
+            The parameter's name.
         bound : Interval | Fixed
-            The bound as an interval or a fixed parameter.
+            The bound.
 
         Returns
         -------
-        Interval | Fixed
-            The normalized parameter bound.
+        bound : Interval | Fixed
+            The normalized bound.
 
         """
-
-        def __normalize(value: float) -> float:
-            return (value + np.pi) % (2 * np.pi) - np.pi
+        period = 2.0 * np.pi
 
         if isinstance(bound, Fixed):
-            return Fixed(__normalize(bound.value))
+            return Fixed((bound.value + np.pi) % period - np.pi)
 
-        lower = __normalize(bound.lower)
-        upper = __normalize(bound.upper)
+        width = bound.upper - bound.lower
 
-        if lower > upper:
+        # Any interval covering a full revolution permits every angle.
+        if width >= period:
+            return Interval(-np.pi, np.pi)
+
+        lower = (bound.lower + np.pi) % period - np.pi
+        upper = lower + width
+
+        if upper > np.pi:
             msg = f"{name} interval crosses the -pi/+pi boundary after normalization: [{lower}, {upper}]."
             raise ValueError(msg)
+
+        if width == 0.0:
+            return Fixed(lower)
 
         return Interval(lower, upper)
 
@@ -496,8 +506,7 @@ class PSpiralFitter:
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         mask_func: _MaskFunc | None = None,
-        param_lo: onp.Array1D[np.float64] | None = None,
-        param_hi: onp.Array1D[np.float64] | None = None,
+        bounds: ParameterBounds | None = None,
     ) -> None:
         if max_iterations is not None and max_iterations < 0:
             raise ValueError("max_iterations must be nonnegative or None.")
@@ -505,30 +514,7 @@ class PSpiralFitter:
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
-
-        self._param_lo: onp.Array1D[np.float64] = np.copy(param_lo if param_lo is not None else _DEFAULT_PARAM_LO).astype(
-            np.float64
-        )
-        self._param_hi: onp.Array1D[np.float64] = np.copy(param_hi if param_hi is not None else _DEFAULT_PARAM_HI).astype(
-            np.float64
-        )
-
-        # Check shapes
-        if self._param_lo.shape != (6,) or self._param_hi.shape != (6,):
-            msg = "Parameter bounds must each have shape (6,)."
-            raise ValueError(msg)
-
-        # Replace nans with default values
-        self._param_lo[np.isnan(self._param_lo)] = _DEFAULT_PARAM_LO[np.isnan(self._param_lo)]
-        self._param_hi[np.isnan(self._param_hi)] = _DEFAULT_PARAM_HI[np.isnan(self._param_hi)]
-
-        # Validate bounds
-        if not (np.all(np.isfinite(self._param_lo)) and np.all(np.isfinite(self._param_hi))):
-            msg = "Parameter bounds must be finite."
-            raise ValueError(msg)
-        if np.any(self._param_lo > self._param_hi):
-            msg = "Lower bounds must not exceed upper bounds."
-            raise ValueError(msg)
+        self._bounds: ParameterBounds = bounds if bounds is not None else ParameterBounds.default()
 
     def fit_spiral(
         self,
