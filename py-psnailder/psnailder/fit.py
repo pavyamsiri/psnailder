@@ -300,12 +300,12 @@ class ParameterBounds:
     def __init__(
         self,
         *,
-        alpha: _ToBounds,
-        b: _ToBounds,
-        c: _ToBounds,
-        theta0: _ToBounds,
-        scale_factor: _ToBounds,
-        rho: _ToBounds,
+        alpha: _ToBounds = (0.0, 1.0),
+        b: _ToBounds = (0.005, 0.1),
+        c: _ToBounds = (0.0, 0.004),
+        theta0: _ToBounds = (-np.pi, np.pi),
+        scale_factor: _ToBounds = (30.0, 70.0),
+        rho: _ToBounds = (0.0, 0.18),
     ) -> None:
         """Create parameter bounds.
 
@@ -338,26 +338,6 @@ class ParameterBounds:
         ParameterBounds._validate_nonnegative("c", self.c)
         ParameterBounds._validate_positive("scale_factor", self.scale_factor)
         ParameterBounds._validate_nonnegative("rho", self.rho)
-
-    @staticmethod
-    def default() -> ParameterBounds:
-        """Construct default bounds.
-
-        Returns
-        -------
-        ParameterBounds
-            The default bounds.
-
-        """
-
-        return ParameterBounds(
-            alpha=(0.0, 1.0),
-            b=(0.005, 0.1),
-            c=(0.0, 0.004),
-            theta0=(-np.pi, np.pi),
-            scale_factor=(30.0, 70.0),
-            rho=(0.0, 0.18),
-        )
 
     @override
     def __str__(self) -> str:
@@ -683,7 +663,7 @@ class PSpiralFitter:
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         mask_func: _MaskFunc | None = None,
-        bounds: Sequence[ParameterBounds] | None = None,
+        bounds: ParameterBounds | Sequence[ParameterBounds] | None = None,
     ) -> None:
         if max_iterations is not None and max_iterations < 0:
             raise ValueError("max_iterations must be nonnegative or None.")
@@ -692,9 +672,17 @@ class PSpiralFitter:
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
 
-        self._bounds: Sequence[ParameterBounds] = (
-            bounds if bounds is not None else (ParameterBounds.default(), ParameterBounds.default())
-        )
+        # A single object broadcasts; explicit sequences select an ordered prefix.
+        self._bounds: ParameterBounds | Sequence[ParameterBounds] = bounds if bounds is not None else ParameterBounds()
+
+    def _component_bounds(self, num_components: int) -> Sequence[ParameterBounds]:
+        if num_components < 1:
+            raise ValueError("Component bounds require a positive component count.")
+        if isinstance(self._bounds, ParameterBounds):
+            return (self._bounds,) * num_components
+        if num_components > len(self._bounds):
+            raise ValueError("Not enough bounds for the requested component count.")
+        return self._bounds[:num_components]
 
     def fit_spiral(
         self,
@@ -945,8 +933,9 @@ class PSpiralFitter:
                 winding=winding,
             )
 
-        if len(self._bounds) < 2:
-            raise ValueError("Automatic component selection requires at least two sets of bounds.")
+        if not isinstance(self._bounds, ParameterBounds) and len(self._bounds) < 2:
+            msg = "Automatic component selection requires at least two sets of bounds."
+            raise ValueError(msg)
 
         res1 = self._fit_with_fixed_background(
             density,
@@ -989,8 +978,8 @@ class PSpiralFitter:
             q1 = ln_likelihood(density, res1.result.final_model.prediction(), mask)
             q2 = ln_likelihood(density, res2.result.final_model.prediction(), mask)
             # BIC penalizes the larger model's additional parameters.
-            k1 = _ParameterLayout.from_bounds(self._bounds[:1]).num_free
-            k2 = _ParameterLayout.from_bounds(self._bounds[:2]).num_free
+            k1 = _ParameterLayout.from_bounds(self._component_bounds(1)).num_free
+            k2 = _ParameterLayout.from_bounds(self._component_bounds(2)).num_free
             num_particles = np.sum(density)
             b1 = k1 * np.log(num_particles) - 2.0 * q1
             b2 = k2 * np.log(num_particles) - 2.0 * q2
@@ -1011,11 +1000,7 @@ class PSpiralFitter:
         guess: onp.Array1D[np.float64] | None = None,
         winding: Literal[-1, 1] | None = None,
     ) -> FitOutcome:
-        if num_components < 1 or num_components > len(self._bounds):
-            msg = "Not enough bounds for the requested component count."
-            raise ValueError(msg)
-
-        layout = _ParameterLayout.from_bounds(self._bounds[:num_components])
+        layout = _ParameterLayout.from_bounds(self._component_bounds(num_components))
         bounds = layout.to_scipy_bounds()
         free_guess: onp.Array1D[np.float64] | None = layout.pack(guess) if guess is not None else None
 
