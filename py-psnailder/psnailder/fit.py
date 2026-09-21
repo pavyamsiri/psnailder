@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Final, Literal
 
 import numpy as np
+import optype as op
 from scipy import ndimage, optimize, special
 
 from ._background_utils import generate_initial_background
@@ -15,7 +16,7 @@ from ._likelihood_utils import ln_likelihood
 from .model import PSpiralModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Sequence
 
     from optype import numpy as onp
 
@@ -216,6 +217,234 @@ def create_sigmoid_mask(z_scale: float, vz_scale: float) -> _MaskFunc:
         return -special.expit(np.square(z_mesh / z_scale) + np.square(vz_mesh / vz_scale) - 1.0) + 1.0
 
     return _func
+
+
+type _ToBounds = Interval | Fixed | Sequence[op.CanFloat] | op.CanFloat
+
+
+@dataclass(frozen=True)
+class Interval:
+    """Parameter bounds expressed as an interval.
+
+    Attributes
+    ----------
+    lower : float
+        The lower bound of the parameter.
+    upper : float
+        The upper bound of the parameter.
+
+    """
+
+    lower: float
+    upper: float
+
+    def __post_init__(self) -> None:
+        """Validate interval bounds."""
+        lower, upper = self.lower, self.upper
+
+        if not np.isfinite(lower) or not np.isfinite(upper):
+            msg = "Interval bounds must be finite."
+            raise ValueError(msg)
+
+        if lower > upper:
+            msg = "Lower bound must not exceed upper bound."
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class Fixed:
+    """A fixed parameter constraint.
+
+    Attributes
+    ----------
+    value : float
+        The fixed value.
+
+    """
+
+    value: float
+
+    def __post_init__(self) -> None:
+        """Validate interval bounds."""
+        value = self.value
+
+        if not np.isfinite(value):
+            msg = "Fixed parameters must be finite."
+            raise ValueError(msg)
+
+
+class ParameterBounds:
+    """Parameter bounds describing a component.
+
+    Attributes
+    ----------
+    alpha : Interval | Fixed
+        The bounds on alpha.
+    b : Interval | Fixed
+        The bounds on b.
+    c : Interval | Fixed
+        The bounds on c.
+    theta0 : Interval | Fixed
+        The bounds on theta0.
+    scale_factor : Interval | Fixed
+        The bounds on scale_factor.
+    rho : Interval | Fixed
+        The bounds on rho.
+
+    """
+
+    def __init__(
+        self,
+        *,
+        alpha: _ToBounds,
+        b: _ToBounds,
+        c: _ToBounds,
+        theta0: _ToBounds,
+        scale_factor: _ToBounds,
+        rho: _ToBounds,
+    ) -> None:
+        """Create parameter bounds.
+
+        Parameters
+        ----------
+        alpha : _ToBounds
+            The bounds on alpha.
+        b : _ToBounds
+            The bounds on b.
+        c : _ToBounds
+            The bounds on c.
+        theta0 : _ToBounds
+            The bounds on theta0.
+        scale_factor : _ToBounds
+            The bounds on scale_factor.
+        rho : _ToBounds
+            The bounds on rho.
+
+        """
+
+        self.alpha: Interval | Fixed = ParameterBounds._parse_bounds(alpha)
+        self.b: Interval | Fixed = ParameterBounds._parse_bounds(b)
+        self.c: Interval | Fixed = ParameterBounds._parse_bounds(c)
+        self.theta0: Interval | Fixed = ParameterBounds._normalize_angle("theta0", ParameterBounds._parse_bounds(theta0))
+        self.scale_factor: Interval | Fixed = ParameterBounds._parse_bounds(scale_factor)
+        self.rho: Interval | Fixed = ParameterBounds._parse_bounds(rho)
+
+        ParameterBounds._validate_nonnegative("alpha", self.alpha)
+        ParameterBounds._validate_positive("b", self.b)
+        ParameterBounds._validate_nonnegative("c", self.c)
+        ParameterBounds._validate_positive("scale_factor", self.scale_factor)
+        ParameterBounds._validate_nonnegative("rho", self.rho)
+
+    @staticmethod
+    def _parse_bounds(value: object) -> Interval | Fixed:
+        """Parse an arbitrary object into either `Interval` or `Fixed`.
+
+        Parameters
+        ----------
+        value : object
+            An arbitrary object to be parsed.
+
+        Returns
+        -------
+        Interval | Fixed
+            The parameter bounds as an interval or a fixed parameter.
+
+        """
+        # Already parsed
+        if isinstance(value, Interval | Fixed):
+            return value
+
+        # Parse Interval
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            if len(value) != 2:
+                msg = "Parameter bounds must contain exactly two values."
+                raise TypeError(msg)
+
+            lower: object = value[0]
+            upper: object = value[1]
+
+            if not isinstance(lower, op.CanFloat) or not isinstance(upper, op.CanFloat):
+                msg = "Parameter bounds must be floats."
+                raise TypeError(msg)
+
+            return Interval(lower=float(lower), upper=float(upper))
+
+        # Parse Fixed
+        if isinstance(value, op.CanFloat):
+            return Fixed(value=float(value))
+
+        # Invalid type
+        msg = "Parameter bounds must be `Interval`, `Fixed`, asequence of two floats or a single float."
+        raise TypeError(msg)
+
+    @staticmethod
+    def _validate_positive(name: str, bound: Interval | Fixed) -> None:
+        """Validate the bound is strictly positive.
+
+        Parameters
+        ----------
+        name : str
+            The name of the parameter bounds.
+        bound : Interval | Fixed
+            The bound as an interval or a fixed parameter.
+
+        """
+        lower = bound.lower if isinstance(bound, Interval) else bound.value
+
+        if lower <= 0.0:
+            msg = f"{name} must be positive."
+            raise ValueError(msg)
+
+    @staticmethod
+    def _validate_nonnegative(name: str, bound: Interval | Fixed) -> None:
+        """Validate the bound is non-negative.
+
+        Parameters
+        ----------
+        name : str
+            The name of the parameter bounds.
+        bound : Interval | Fixed
+            The bound as an interval or a fixed parameter.
+
+        """
+        lower = bound.lower if isinstance(bound, Interval) else bound.value
+
+        if lower < 0.0:
+            msg = f"{name} must be non-negative."
+            raise ValueError(msg)
+
+    @staticmethod
+    def _normalize_angle(name: str, bound: Interval | Fixed) -> Interval | Fixed:
+        """Normalize angle bounds into the range [-pi, +pi].
+
+        Parameters
+        ----------
+        name : str
+            The name of the parameter bounds.
+        bound : Interval | Fixed
+            The bound as an interval or a fixed parameter.
+
+        Returns
+        -------
+        Interval | Fixed
+            The normalized parameter bound.
+
+        """
+
+        def __normalize(value: float) -> float:
+            return (value + np.pi) % (2 * np.pi) - np.pi
+
+        if isinstance(bound, Fixed):
+            return Fixed(__normalize(bound.value))
+
+        lower = __normalize(bound.lower)
+        upper = __normalize(bound.upper)
+
+        if lower > upper:
+            msg = f"{name} interval crosses the -pi/+pi boundary after normalization: [{lower}, {upper}]."
+            raise ValueError(msg)
+
+        return Interval(lower, upper)
 
 
 class PSpiralFitter:
