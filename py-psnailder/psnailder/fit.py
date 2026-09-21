@@ -557,6 +557,60 @@ class _ParameterLayout:
         """int: The number of free parameters."""
         return len(self.free_indices)
 
+    @staticmethod
+    def from_bounds(bounds: ParameterBounds) -> _ParameterLayout:
+        """Create layout from bounds object.
+
+        Parameters
+        ----------
+        bounds : ParameterBounds
+            The bounds object.
+
+        Returns
+        -------
+        layout : ParameterLayout
+            The layout.
+
+        """
+
+        # TODO(pavyamsiri): ParameterBounds we will assume only supports a single set of bounds for all components
+        bounds_list: list[Interval | Fixed] = [bounds.alpha, bounds.b, bounds.c, bounds.theta0, bounds.scale_factor, bounds.rho]
+        template = np.empty(len(bounds_list), dtype=np.float64)
+
+        free_indices_list: list[int] = []
+        lower_list: list[float] = []
+        upper_list: list[float] = []
+
+        for idx, current_bounds in enumerate(bounds_list):
+            # Free
+            if isinstance(current_bounds, Interval):
+                free_indices_list.append(idx)
+                lower_list.append(current_bounds.lower)
+                upper_list.append(current_bounds.upper)
+
+        free_indices = np.array(free_indices_list, dtype=np.intp)
+        lower = np.array(lower_list, dtype=np.float64)
+        upper = np.array(upper_list, dtype=np.float64)
+
+        return _ParameterLayout(
+            template=template,
+            free_indices=free_indices,
+            lower=lower,
+            upper=upper,
+        )
+
+    def to_scipy_bounds(self) -> optimize.Bounds:
+        """Convert layout to scipy.optimize.Bounds object.
+
+        Returns
+        -------
+        optimize.Bounds
+            The converted bounds object.
+
+        """
+
+        return optimize.Bounds(lb=self.lower, ub=self.upper)
+
     def pack(self, full_parameters: onp.Array1D[np.float64], *, eps: float = 1e-12) -> onp.Array1D[np.float64]:
         """Pack an array of the full parameter set into an array of just the free parameters.
 
@@ -615,6 +669,26 @@ class _ParameterLayout:
         return full_parameters
 
 
+@dataclass(frozen=True)
+class _OptimizationResult:
+    """The parameter optimization result.
+
+    Attributes
+    ----------
+    parameters : Array1D[f64]
+        The optimized (free) parameters.
+    cost : float
+        The minimized cost.
+    success : bool
+        Whether optimization was successful.
+
+    """
+
+    parameters: onp.Array1D[np.float64]
+    cost: float
+    success: bool
+
+
 class PSpiralFitter:
     """A configuration of the spiral fitting algorithm."""
 
@@ -633,6 +707,8 @@ class PSpiralFitter:
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
         self._bounds: ParameterBounds = bounds if bounds is not None else ParameterBounds.default()
+        self._layout: _ParameterLayout = _ParameterLayout.from_bounds(self._bounds)
+        self._scipy_bounds: optimize.Bounds = self._layout.to_scipy_bounds()
 
     def fit_spiral(
         self,
@@ -816,35 +892,39 @@ class PSpiralFitter:
         self,
         objective_func: _ObjectiveFunc,
         *,
+        bounds: optimize.Bounds,
         rng: np.random.Generator,
         guess: onp.Array1D[np.float64] | None,
-        num_components: int = 1,
-    ) -> optimize.OptimizeResult:
-        # `guess` may be None or a flat vector of length 6 * `num_components`
-        assert guess is None or (guess.ndim == 1 and len(guess) == 6 * num_components)
-        lo = np.tile(self._param_lo, num_components)
-        hi = np.tile(self._param_hi, num_components)
-        bounds = optimize.Bounds(lo, hi)
+    ) -> _OptimizationResult:
+        """Minimize the cost of the objective.
 
-        if guess is not None:
-            eps = 1e-12 * (hi - lo)
-            clamped = np.clip(guess, lo + eps, hi - eps)
-            out_of_bounds = int(np.count_nonzero(clamped != guess))
-            if out_of_bounds:
-                log.warning(
-                    "Initial guess had %d of %d parameters outside bounds; clamping.",
-                    out_of_bounds,
-                    guess.size,
-                )
-            guess = clamped
+        Parameters
+        ----------
+        objective_func : ObjectiveFunc
+            The objective to minimize.
+        bounds : optimize.Bounds
+            The bounds object.
+        rng : np.random.Generator
+            The rng.
+        guess : Array1D[f64] | None
+            A guess of the optimal parameters, must be trimmed to only free parameters.
+
+        Returns
+        -------
+        result : OptimizationResult
+            The optimization result.
+
+        """
 
         def objective(parameters: onp.Array1D[np.float64]) -> float:
             return float(objective_func(parameters))
 
         res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
-        if not res.success:
-            log.warning("Failed to find maximum likelihood: %s", res.message)
-        return res
+        return _OptimizationResult(
+            parameters=res.x,
+            cost=res.fun,
+            success=res.success,
+        )
 
     def _establish_initial_fit(
         self,
@@ -936,19 +1016,19 @@ class PSpiralFitter:
         winding: Literal[-1, 1] | None = None,
     ) -> FitOutcome:
         def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
-            def _objective(parameters: onp.Array1D[np.float64]) -> float:
-                params = np.array(parameters, dtype=np.float64).reshape((num_components, 6))
+            def _objective(free_parameters: onp.Array1D[np.float64]) -> float:
+                params = self._layout.unpack(free_parameters).reshape((num_components, 6))
                 model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=current_winding)
                 return -ln_likelihood(density, model.prediction(), mask)
 
             return _objective
 
-        res: optimize.OptimizeResult
+        res: _OptimizationResult
         chosen_winding: Literal[-1, 1]
         if winding is None:
-            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=guess, num_components=num_components)
-            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=guess, num_components=num_components)
-            if np.isfinite(pos_res.fun) and (not np.isfinite(neg_res.fun) or pos_res.fun <= neg_res.fun):
+            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=guess, bounds=self._scipy_bounds)
+            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=guess, bounds=self._scipy_bounds)
+            if np.isfinite(pos_res.cost) and (not np.isfinite(neg_res.cost) or pos_res.cost <= neg_res.cost):
                 chosen_winding = 1
                 res = pos_res
             else:
@@ -958,10 +1038,10 @@ class PSpiralFitter:
         else:
             # Optimize for chosen winding.
             chosen_winding = winding
-            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=guess, num_components=num_components)
-        if not np.isfinite(res.fun):
+            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=guess, bounds=self._scipy_bounds)
+        if not np.isfinite(res.cost):
             return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
-        params: onp.Array2D[np.float64] = np.array(res.x, dtype=np.float64).reshape((num_components, 6))
+        params: onp.Array2D[np.float64] = np.array(res.parameters, dtype=np.float64).reshape((num_components, 6))
         model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
         return FitSuccess(
             PSpiralFitResult(
@@ -970,7 +1050,7 @@ class PSpiralFitter:
                 data=density,
                 num_iterations=0,
                 max_iterations=self._max_iterations,
-                lnl=-float(res.fun),
+                lnl=-res.cost,
                 reason=FitTerminationReason.FIXED_BACKGROUND,
             )
         )
