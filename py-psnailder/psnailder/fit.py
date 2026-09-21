@@ -32,6 +32,9 @@ _DEFAULT_PARAM_HI: Final[onp.Array1D[np.float64]] = np.array([1.0, 0.1, 0.004, +
 log: Final[logging.Logger] = logging.getLogger(__name__)
 
 __all__: Final[list[str]] = [
+    "Interval",
+    "Fixed",
+    "ParameterBounds",
     "FitEvent",
     "FitOutcome",
     "FitProgress",
@@ -326,7 +329,7 @@ class ParameterBounds:
         self.alpha: Interval | Fixed = ParameterBounds._parse_bounds(alpha)
         self.b: Interval | Fixed = ParameterBounds._parse_bounds(b)
         self.c: Interval | Fixed = ParameterBounds._parse_bounds(c)
-        self.theta0: Interval | Fixed = ParameterBounds._normalize_angle("theta0", ParameterBounds._parse_bounds(theta0))
+        self.theta0: Interval | Fixed = ParameterBounds._parse_bounds(theta0)
         self.scale_factor: Interval | Fixed = ParameterBounds._parse_bounds(scale_factor)
         self.rho: Interval | Fixed = ParameterBounds._parse_bounds(rho)
 
@@ -453,49 +456,6 @@ class ParameterBounds:
             msg = f"{name} must be non-negative."
             raise ValueError(msg)
 
-    @staticmethod
-    def _normalize_angle(
-        name: str,
-        bound: Interval | Fixed,
-    ) -> Interval | Fixed:
-        """Normalize angles in a bound to be within [-pi, pi].
-
-        Parameters
-        ----------
-        name : str
-            The parameter's name.
-        bound : Interval | Fixed
-            The bound.
-
-        Returns
-        -------
-        bound : Interval | Fixed
-            The normalized bound.
-
-        """
-        period = 2.0 * np.pi
-
-        if isinstance(bound, Fixed):
-            return Fixed((bound.value + np.pi) % period - np.pi)
-
-        width = bound.upper - bound.lower
-
-        # Any interval covering a full revolution permits every angle.
-        if width >= period:
-            return Interval(-np.pi, np.pi)
-
-        lower = (bound.lower + np.pi) % period - np.pi
-        upper = lower + width
-
-        if upper > np.pi:
-            msg = f"{name} interval crosses the -pi/+pi boundary after normalization: [{lower}, {upper}]."
-            raise ValueError(msg)
-
-        if width == 0.0:
-            return Fixed(lower)
-
-        return Interval(lower, upper)
-
 
 @dataclass(frozen=True)
 class _ParameterLayout:
@@ -525,17 +485,26 @@ class _ParameterLayout:
     def __post_init__(self) -> None:
         """Validate the bounds and free indices."""
 
+        if any(array.ndim != 1 for array in (self.template, self.free_indices, self.lower, self.upper)):
+            raise ValueError("Layout arrays must be one-dimensional.")
+        if not np.issubdtype(self.free_indices.dtype, np.integer):
+            raise ValueError("Free parameter indices must be integers.")
+        if np.unique(self.free_indices).size != self.free_indices.size:
+            raise ValueError("Free parameter indices must be unique.")
+        if not all(np.all(np.isfinite(array)) for array in (self.template, self.lower, self.upper)):
+            raise ValueError("Layout values must be finite.")
+
         num_total_parameters = len(self.template)
         num_free_parameters = len(self.free_indices)
         if num_free_parameters > num_total_parameters:
             msg = "The number of free parameters must not exceed the number of total parameters."
             raise ValueError(msg)
 
-        if np.max(self.free_indices) >= len(self.template):
+        if np.any(self.free_indices >= len(self.template)):
             msg = "The free parameter indices must not point past the number of total parameters."
             raise ValueError(msg)
 
-        if np.min(self.free_indices) < 0:
+        if np.any(self.free_indices < 0):
             msg = "The free parameter indices must not be negative."
             raise ValueError(msg)
 
@@ -558,13 +527,13 @@ class _ParameterLayout:
         return len(self.free_indices)
 
     @staticmethod
-    def from_bounds(bounds: ParameterBounds) -> _ParameterLayout:
+    def from_bounds(bounds_list: Sequence[ParameterBounds]) -> _ParameterLayout:
         """Create layout from bounds object.
 
         Parameters
         ----------
-        bounds : ParameterBounds
-            The bounds object.
+        bounds_list : Sequence[ParameterBounds]
+            Bounds for each component, in model order.
 
         Returns
         -------
@@ -573,20 +542,34 @@ class _ParameterLayout:
 
         """
 
-        # TODO(pavyamsiri): ParameterBounds we will assume only supports a single set of bounds for all components
-        bounds_list: list[Interval | Fixed] = [bounds.alpha, bounds.b, bounds.c, bounds.theta0, bounds.scale_factor, bounds.rho]
-        template = np.empty(len(bounds_list), dtype=np.float64)
+        parameter_bounds_list: list[Interval | Fixed] = []
+        for bounds in bounds_list:
+            parameter_bounds_list.append(bounds.alpha)
+            parameter_bounds_list.append(bounds.b)
+            parameter_bounds_list.append(bounds.c)
+            parameter_bounds_list.append(bounds.theta0)
+            parameter_bounds_list.append(bounds.scale_factor)
+            parameter_bounds_list.append(bounds.rho)
+
+        template = np.zeros(len(parameter_bounds_list), dtype=np.float64)
 
         free_indices_list: list[int] = []
         lower_list: list[float] = []
         upper_list: list[float] = []
 
-        for idx, current_bounds in enumerate(bounds_list):
+        for idx, current_bounds in enumerate(parameter_bounds_list):
             # Free
             if isinstance(current_bounds, Interval):
-                free_indices_list.append(idx)
-                lower_list.append(current_bounds.lower)
-                upper_list.append(current_bounds.upper)
+                if current_bounds.lower != current_bounds.upper:
+                    free_indices_list.append(idx)
+                    lower_list.append(current_bounds.lower)
+                    upper_list.append(current_bounds.upper)
+                else:
+                    template[idx] = current_bounds.lower
+            # Fixed
+            else:
+                assert isinstance(current_bounds, Fixed), f"Should be `Fixed` by type annotations: {current_bounds}"
+                template[idx] = current_bounds.value
 
         free_indices = np.array(free_indices_list, dtype=np.intp)
         lower = np.array(lower_list, dtype=np.float64)
@@ -635,11 +618,13 @@ class _ParameterLayout:
 
         """
 
-        if len(full_parameters) != len(self.template):
+        if full_parameters.shape != self.template.shape:
             msg = f"Expected the number of full parameters to be {len(self.template)}."
             raise ValueError(msg)
 
         values: onp.Array1D[np.float64] = full_parameters[self.free_indices]
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Free initial guesses must be finite.")
         width: onp.Array1D[np.float64] = self.upper - self.lower
         clamped = np.clip(values, self.lower + eps * width, self.upper - eps * width)
         return clamped
@@ -660,7 +645,7 @@ class _ParameterLayout:
         """
 
         num_free_parameters = self.num_free
-        if len(free_parameters) != num_free_parameters:
+        if free_parameters.shape != (num_free_parameters,):
             msg = f"Expected the number of free parameters to be {num_free_parameters}"
             raise ValueError(msg)
 
@@ -698,7 +683,7 @@ class PSpiralFitter:
         max_iterations: int | None = 50,
         smoothing_func: _SmoothingFunc | None = None,
         mask_func: _MaskFunc | None = None,
-        bounds: ParameterBounds | None = None,
+        bounds: Sequence[ParameterBounds] | None = None,
     ) -> None:
         if max_iterations is not None and max_iterations < 0:
             raise ValueError("max_iterations must be nonnegative or None.")
@@ -706,9 +691,10 @@ class PSpiralFitter:
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
-        self._bounds: ParameterBounds = bounds if bounds is not None else ParameterBounds.default()
-        self._layout: _ParameterLayout = _ParameterLayout.from_bounds(self._bounds)
-        self._scipy_bounds: optimize.Bounds = self._layout.to_scipy_bounds()
+
+        self._bounds: Sequence[ParameterBounds] = (
+            bounds if bounds is not None else (ParameterBounds.default(), ParameterBounds.default())
+        )
 
     def fit_spiral(
         self,
@@ -919,7 +905,14 @@ class PSpiralFitter:
         def objective(parameters: onp.Array1D[np.float64]) -> float:
             return float(objective_func(parameters))
 
+        if bounds.lb.size == 0:
+            parameters = np.empty(0, dtype=np.float64)
+            cost = objective(parameters)
+            return _OptimizationResult(parameters=parameters, cost=cost, success=bool(np.isfinite(cost)))
+
         res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
+        if not res.success:
+            log.warning("Optimization did not converge: %s", res.message)
         return _OptimizationResult(
             parameters=res.x,
             cost=res.fun,
@@ -951,6 +944,9 @@ class PSpiralFitter:
                 guess=guess,
                 winding=winding,
             )
+
+        if len(self._bounds) < 2:
+            raise ValueError("Automatic component selection requires at least two sets of bounds.")
 
         res1 = self._fit_with_fixed_background(
             density,
@@ -993,8 +989,8 @@ class PSpiralFitter:
             q1 = ln_likelihood(density, res1.result.final_model.prediction(), mask)
             q2 = ln_likelihood(density, res2.result.final_model.prediction(), mask)
             # BIC penalizes the larger model's additional parameters.
-            k1 = 6
-            k2 = 12
+            k1 = _ParameterLayout.from_bounds(self._bounds[:1]).num_free
+            k2 = _ParameterLayout.from_bounds(self._bounds[:2]).num_free
             num_particles = np.sum(density)
             b1 = k1 * np.log(num_particles) - 2.0 * q1
             b2 = k2 * np.log(num_particles) - 2.0 * q2
@@ -1015,9 +1011,17 @@ class PSpiralFitter:
         guess: onp.Array1D[np.float64] | None = None,
         winding: Literal[-1, 1] | None = None,
     ) -> FitOutcome:
+        if num_components < 1 or num_components > len(self._bounds):
+            msg = "Not enough bounds for the requested component count."
+            raise ValueError(msg)
+
+        layout = _ParameterLayout.from_bounds(self._bounds[:num_components])
+        bounds = layout.to_scipy_bounds()
+        free_guess: onp.Array1D[np.float64] | None = layout.pack(guess) if guess is not None else None
+
         def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
             def _objective(free_parameters: onp.Array1D[np.float64]) -> float:
-                params = self._layout.unpack(free_parameters).reshape((num_components, 6))
+                params = layout.unpack(free_parameters).reshape((num_components, 6))
                 model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=current_winding)
                 return -ln_likelihood(density, model.prediction(), mask)
 
@@ -1026,8 +1030,8 @@ class PSpiralFitter:
         res: _OptimizationResult
         chosen_winding: Literal[-1, 1]
         if winding is None:
-            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=guess, bounds=self._scipy_bounds)
-            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=guess, bounds=self._scipy_bounds)
+            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=free_guess, bounds=bounds)
+            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=free_guess, bounds=bounds)
             if np.isfinite(pos_res.cost) and (not np.isfinite(neg_res.cost) or pos_res.cost <= neg_res.cost):
                 chosen_winding = 1
                 res = pos_res
@@ -1038,10 +1042,10 @@ class PSpiralFitter:
         else:
             # Optimize for chosen winding.
             chosen_winding = winding
-            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=guess, bounds=self._scipy_bounds)
+            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=free_guess, bounds=bounds)
         if not np.isfinite(res.cost):
             return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
-        params: onp.Array2D[np.float64] = np.array(res.parameters, dtype=np.float64).reshape((num_components, 6))
+        params: onp.Array2D[np.float64] = layout.unpack(res.parameters).reshape((num_components, 6))
         model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
         return FitSuccess(
             PSpiralFitResult(

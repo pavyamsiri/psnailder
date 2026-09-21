@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from optype import numpy as onp
-from scipy.optimize import OptimizeResult
+from scipy.optimize import Bounds, OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
 from psnailder.fit import (
@@ -19,88 +19,8 @@ from psnailder.fit import (
     FitSuccess,
     FitTerminationReason,
     PSpiralFitter,
-    _DEFAULT_PARAM_HI,
-    _DEFAULT_PARAM_LO,
+    _OptimizationResult,
 )
-
-
-def test_bounds_preserve_caller_arrays_and_resolve_defaults() -> None:
-    """NaN replacement preserves inputs and retains explicit endpoints."""
-    lower = np.array([0.2, np.nan, np.nan, -1.0, np.nan, np.nan])
-    upper = np.array([0.8, np.nan, np.nan, 1.0, np.nan, np.nan])
-    original_lower = lower.copy()
-    original_upper = upper.copy()
-
-    fitter = PSpiralFitter(param_lo=lower, param_hi=upper)
-
-    np.testing.assert_array_equal(lower, original_lower)
-    np.testing.assert_array_equal(upper, original_upper)
-    np.testing.assert_array_equal(fitter._param_lo, [0.2, 0.005, 0.0, -1.0, 30.0, 0.0])
-    np.testing.assert_array_equal(fitter._param_hi, [0.8, 0.1, 0.004, 1.0, 70.0, 0.18])
-
-    lower[:] = -100.0
-    upper[:] = 100.0
-    np.testing.assert_array_equal(fitter._param_lo, [0.2, 0.005, 0.0, -1.0, 30.0, 0.0])
-    np.testing.assert_array_equal(fitter._param_hi, [0.8, 0.1, 0.004, 1.0, 70.0, 0.18])
-
-
-def test_default_bounds_are_independent() -> None:
-    """Each fitter owns bounds separate from other instances and defaults."""
-    first = PSpiralFitter()
-    second = PSpiralFitter()
-
-    for first_bounds, second_bounds, defaults in (
-        (first._param_lo, second._param_lo, _DEFAULT_PARAM_LO),
-        (first._param_hi, second._param_hi, _DEFAULT_PARAM_HI),
-    ):
-        np.testing.assert_array_equal(first_bounds, defaults)
-        np.testing.assert_array_equal(second_bounds, defaults)
-        assert not np.shares_memory(first_bounds, second_bounds)
-        assert not np.shares_memory(first_bounds, defaults)
-        assert not np.shares_memory(second_bounds, defaults)
-
-
-@pytest.mark.parametrize("lower", [True, False], ids=["lower", "upper"])
-@pytest.mark.parametrize("shape", [(), (0,), (5,), (7,), (1, 6), (6, 1)])
-def test_bounds_reject_invalid_shapes(lower: bool, shape: tuple[int, ...]) -> None:
-    # NaNs also ensure shape validation happens before default substitution.
-    invalid = np.full(shape, np.nan)
-    with pytest.raises(ValueError, match=r"shape \(6,\)"):
-        PSpiralFitter(param_lo=invalid if lower else None, param_hi=None if lower else invalid)
-
-
-@pytest.mark.parametrize("lower", [True, False], ids=["lower", "upper"])
-@pytest.mark.parametrize("value", [np.inf, -np.inf])
-def test_bounds_reject_infinite_endpoints(lower: bool, value: float) -> None:
-    invalid = np.full(6, np.nan)
-    invalid[0] = value
-    with pytest.raises(ValueError, match="must be finite"):
-        PSpiralFitter(param_lo=invalid if lower else None, param_hi=None if lower else invalid)
-
-
-@pytest.mark.parametrize("index", range(6))
-def test_bounds_reject_reversed_endpoints(index: int) -> None:
-    lower = _DEFAULT_PARAM_LO.copy()
-    upper = _DEFAULT_PARAM_HI.copy()
-    lower[index] = upper[index] + 1.0
-    with pytest.raises(ValueError, match="Lower bounds must not exceed upper bounds"):
-        PSpiralFitter(param_lo=lower, param_hi=upper)
-
-
-def test_bounds_validate_order_after_resolving_defaults() -> None:
-    lower = np.full(6, np.nan)
-    upper = np.full(6, np.nan)
-    upper[0] = -1.0  # Conflicts with the default lower alpha bound of zero.
-    with pytest.raises(ValueError, match="Lower bounds must not exceed upper bounds"):
-        PSpiralFitter(param_lo=lower, param_hi=upper)
-
-
-def test_bounds_accept_equal_endpoints() -> None:
-    parameters = np.array([0.5, 0.05, 0.002, 0.0, 40.0, 0.09])
-    fitter = PSpiralFitter(param_lo=parameters, param_hi=parameters)
-    np.testing.assert_array_equal(fitter._param_lo, parameters)
-    np.testing.assert_array_equal(fitter._param_hi, parameters)
-    assert not np.shares_memory(fitter._param_lo, fitter._param_hi)
 
 
 @pytest.mark.parametrize("num_components", [1, 2])
@@ -128,7 +48,9 @@ def test_warm_start_forwarded_to_differential_evolution(num_components: int) -> 
 
     optimizer.assert_called_once()
     assert optimizer.call_args is not None
-    np.testing.assert_array_equal(optimizer.call_args.kwargs["x0"], parameters)
+    expected_guess = parameters.copy()
+    expected_guess[::6] = 1e-12  # pack moves endpoints slightly inside their intervals.
+    np.testing.assert_array_equal(optimizer.call_args.kwargs["x0"], expected_guess)
     assert optimizer.call_args.kwargs["rng"] is rng
     assert isinstance(result, FitSuccess)
     np.testing.assert_array_equal(result.result.final_model.to_array(), parameters)
@@ -194,10 +116,10 @@ def test_background_refinement_result_consistency(
         objective_func: Callable[[onp.Array1D[np.float64]], onp.ToFloat],
         *,
         rng: np.random.Generator,
-        warm_start: onp.Array1D[np.float64] | None,
-        param_count: int = 1,
-    ) -> OptimizeResult:
-        return OptimizeResult(x=parameters.copy(), fun=float(objective_func(parameters)), success=True)
+        guess: onp.Array1D[np.float64] | None,
+        bounds: Bounds,
+    ) -> _OptimizationResult:
+        return _OptimizationResult(parameters=parameters.copy(), cost=float(objective_func(parameters)), success=True)
 
     def smooth(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         nonlocal smoothing_calls
@@ -279,8 +201,8 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
 def test_winding_selection_retains_finite_candidate(positive_valid: bool, invalid: float) -> None:
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
     grid = np.ones((2, 2))
-    valid = OptimizeResult(x=parameters, fun=0.0)
-    failed = OptimizeResult(x=parameters, fun=invalid)
+    valid = _OptimizationResult(parameters=parameters, cost=0.0, success=True)
+    failed = _OptimizationResult(parameters=parameters, cost=invalid, success=False)
     with patch.object(PSpiralFitter, "_optimize_parameters", side_effect=[valid, failed] if positive_valid else [failed, valid]):
         outcome = PSpiralFitter().fit_spiral_with_background(
             grid,
@@ -305,14 +227,15 @@ def test_component_selection_retains_success(successful_count: int | None, impro
         objective: Callable[[onp.Array1D[np.float64]], onp.ToFloat],
         *,
         rng: np.random.Generator,
-        warm_start: onp.Array1D[np.float64] | None,
-        param_count: int = 1,
-    ) -> OptimizeResult:
+        guess: onp.Array1D[np.float64] | None,
+        bounds: Bounds,
+    ) -> _OptimizationResult:
         nonlocal calls
         calls += 1
+        param_count = bounds.lb.size // 6
         parameters = np.tile([0.0, 0.05, 0.002, 0.0, 40.0, 0.09], param_count)
         valid = calls <= 2 and (successful_count == 0 or param_count == successful_count)
-        return OptimizeResult(x=parameters, fun=float(objective(parameters)) if valid else np.inf)
+        return _OptimizationResult(parameters=parameters, cost=float(objective(parameters)) if valid else np.inf, success=valid)
 
     with patch.object(fitter, "_optimize_parameters", side_effect=optimize):
         events = list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid, winding=-1, improve_background=improve))
@@ -342,7 +265,11 @@ def test_invalid_background_retains_valid_fit(accepted_first: bool) -> None:
     proposals = iter(([data.copy()] if accepted_first else []) + [np.full_like(data, np.nan)])
     fitter = PSpiralFitter(max_iterations=3, smoothing_func=lambda arr: next(proposals))
     scores = [1.0, 0.0] if accepted_first else [1.0]
-    with patch.object(fitter, "_optimize_parameters", side_effect=[OptimizeResult(x=parameters, fun=s) for s in scores]):
+    with patch.object(
+        fitter,
+        "_optimize_parameters",
+        side_effect=[_OptimizationResult(parameters=parameters, cost=s, success=True) for s in scores],
+    ):
         events = list(fitter.fit_spiral_with_background_gen(data, background, mesh, mesh, winding=1, num_components=1))
     assert all(isinstance(event, FitProgress) for event in events[:-1])
     outcome = events[-1]
@@ -354,7 +281,9 @@ def test_invalid_background_retains_valid_fit(accepted_first: bool) -> None:
 def test_zero_refinement_budget_retains_initial_fit() -> None:
     grid = np.ones((2, 2))
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
-    with patch.object(PSpiralFitter, "_optimize_parameters", return_value=OptimizeResult(x=parameters, fun=0.0)) as optimizer:
+    with patch.object(
+        PSpiralFitter, "_optimize_parameters", return_value=_OptimizationResult(parameters=parameters, cost=0.0, success=True)
+    ) as optimizer:
         events = list(
             PSpiralFitter(max_iterations=0).fit_spiral_with_background_gen(
                 grid,
@@ -398,15 +327,15 @@ def test_selection_only_happens_once(
         objective: Callable[[onp.Array1D[np.float64]], onp.ToFloat],
         *,
         rng: np.random.Generator,
-        warm_start: onp.Array1D[np.float64] | None,
-        param_count: int = 1,
-    ) -> OptimizeResult:
+        guess: onp.Array1D[np.float64] | None,
+        bounds: Bounds,
+    ) -> _OptimizationResult:
         seen_rngs.append(rng)
-        guesses.append(warm_start)
-        params = np.tile(parameters, param_count)
+        guesses.append(guess)
+        params = np.tile(parameters, bounds.lb.size // 6)
         score = float(objective(params))
         scores.append(score)
-        return OptimizeResult(x=params, fun=score)
+        return _OptimizationResult(parameters=params, cost=score, success=True)
 
     def mask(z: onp.Array2D[np.float64], vz: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         return np.ones_like(z)
@@ -430,7 +359,9 @@ def test_selection_only_happens_once(
     mask_factory.assert_called_once()
     assert all(seen is rng for seen in seen_rngs)
     assert all(guess is None for guess in guesses[:-1])
-    np.testing.assert_array_equal(guesses[-1], np.tile(parameters, num_components or 1))
+    expected_guess = np.tile(parameters, num_components or 1)
+    expected_guess[::6] = 1e-12
+    np.testing.assert_array_equal(guesses[-1], expected_guess)
     # Re-optimization evaluates the proposed background, not the initial one again.
     assert scores[:-1] == pytest.approx([1.0] * initial_calls)
     assert scores[-1] == pytest.approx(0.0)
