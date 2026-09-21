@@ -392,6 +392,47 @@ def test_sample_wrapper_forwards_rng_and_outcome() -> None:
     assert fit.call_args.kwargs["rng"] is rng
 
 
+@pytest.mark.parametrize("uniform", [False, True])
+def test_sample_background_accounts_for_bin_area(uniform: bool) -> None:
+    z_edges = np.array([0.0, 1.0, 2.0]) if uniform else np.array([0.0, 1.0, 4.0])
+    vz_edges = np.array([0.0, 2.0, 4.0, 6.0]) if uniform else np.array([0.0, 2.0, 3.0, 7.0])
+    z = np.array([0.5, 0.5, 0.5, 1.5, 1.5, 1.5, 10.0])
+    vz = np.array([1.0, 2.5, 5.0, 1.0, 2.5, 5.0, 10.0])
+    kde_density = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    original = kde_density.copy()
+    failure = FitFailure(FitFailureReason.NO_VALID_CANDIDATE, "Test sentinel")
+    fitter = PSpiralFitter()
+    with patch("psnailder.fit.generate_initial_background", return_value=kde_density):
+        with patch.object(fitter, "fit_spiral_with_background_gen", return_value=iter([failure])) as fit:
+            assert fitter.fit_spiral(z, vz, z_edges, vz_edges) is failure
+    assert fit.call_args is not None
+    counts, background, z_mesh, vz_mesh = fit.call_args.args
+    expected_mass = original * np.outer(np.diff(vz_edges), np.diff(z_edges))
+    np.testing.assert_allclose(background, 6.0 * expected_mass / expected_mass.sum())
+    assert background.sum() == pytest.approx(counts.sum())
+    assert counts.sum() == 6  # The seventh sample lies outside the fitting region.
+    assert background.shape == z_mesh.shape == vz_mesh.shape == (3, 2)
+    np.testing.assert_array_equal(kde_density, original)
+    if uniform:
+        np.testing.assert_allclose(background, 6.0 * original / original.sum())
+
+
+@pytest.mark.parametrize("edges", [[0.0, 0.0, 1.0], [1.0, 0.0], [0.0, np.inf], [0.0, np.nan], [0.0]])
+@pytest.mark.parametrize("axis", ["z", "vz"])
+def test_invalid_bin_edges_rejected_before_kde(edges: list[float], axis: str) -> None:
+    invalid = np.array(edges)
+    valid = np.array([0.0, 1.0])
+    with patch("psnailder.fit.generate_initial_background") as kde:
+        with pytest.raises(ValueError, match="bin edges"):
+            PSpiralFitter().fit_spiral(
+                np.array([0.5]),
+                np.array([0.5]),
+                invalid if axis == "z" else valid,
+                invalid if axis == "vz" else valid,
+            )
+    kde.assert_not_called()
+
+
 @pytest.mark.parametrize("background_scale", [0.01, 1.0, 100.0])
 def test_normalized_two_arm_amplitude_recovery(background_scale: float) -> None:
     """Recover amplitude independently of the supplied background normalization."""
