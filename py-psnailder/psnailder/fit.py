@@ -1004,11 +1004,22 @@ class PSpiralFitter:
         bounds = layout.to_scipy_bounds()
         free_guess: onp.Array1D[np.float64] | None = layout.pack(guess) if guess is not None else None
 
+        density_total = np.sum(density)
+        if not np.isfinite(density_total) or density_total <= 0:
+            return FitFailure(
+                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Total observed count must be positive and finite."
+            )
+
         def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
             def _objective(free_parameters: onp.Array1D[np.float64]) -> float:
                 params = layout.unpack(free_parameters).reshape((num_components, 6))
                 model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=current_winding)
-                return -ln_likelihood(density, model.prediction(), mask)
+                prediction = model.prediction()
+                prediction_total = np.sum(prediction)
+                if not np.isfinite(prediction_total) or prediction_total <= 0:
+                    return float("inf")
+                prediction *= density_total / prediction_total
+                return -ln_likelihood(density, prediction, mask)
 
             return _objective
 
@@ -1032,6 +1043,16 @@ class PSpiralFitter:
             return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
         params: onp.Array2D[np.float64] = layout.unpack(res.parameters).reshape((num_components, 6))
         model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
+        prediction_total = np.sum(model.prediction())
+        if not np.isfinite(prediction_total) or prediction_total <= 0:
+            return FitFailure(
+                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Total predicted count must be positive and finite."
+            )
+        # Store the winning scale without mutating the caller's background.
+        model.background = background * (density_total / prediction_total)
+        final_lnl = ln_likelihood(density, model.prediction(), mask)
+        if not np.isfinite(final_lnl):
+            return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="Normalized prediction is invalid.")
         return FitSuccess(
             PSpiralFitResult(
                 initial_model=model,
@@ -1039,7 +1060,7 @@ class PSpiralFitter:
                 data=density,
                 num_iterations=0,
                 max_iterations=self._max_iterations,
-                lnl=-res.cost,
+                lnl=final_lnl,
                 reason=FitTerminationReason.FIXED_BACKGROUND,
             )
         )
@@ -1058,14 +1079,12 @@ class PSpiralFitter:
 
         num_iterations: int = 0
         initial_density: Final[onp.Array2D[np.float64]] = initial_fit.result.data
-        initial_density_norm = np.sum(initial_density)
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
 
             current_model, current_lnl = accepted
             current_perturbation = current_model.signal()
             new_background = self._smoothing_func(initial_density / current_perturbation)
-            new_background: onp.Array2D[np.float64] = new_background / np.sum(new_background) * initial_density_norm
 
             if np.any(~np.isfinite(new_background)):
                 yield FitSuccess(

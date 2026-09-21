@@ -390,3 +390,41 @@ def test_sample_wrapper_forwards_rng_and_outcome() -> None:
     fit.assert_called_once()
     assert fit.call_args is not None
     assert fit.call_args.kwargs["rng"] is rng
+
+
+@pytest.mark.parametrize("background_scale", [0.01, 1.0, 100.0])
+def test_normalized_two_arm_amplitude_recovery(background_scale: float) -> None:
+    """Recover amplitude independently of the supplied background normalization."""
+    from psnailder.fit import ParameterBounds
+    from psnailder.model import PSpiralModel
+
+    z_mesh, vz_mesh = np.meshgrid(np.linspace(-1.2, 1.2, 40), np.linspace(-60.0, 60.0, 40))
+    background = np.exp(-0.5 * (z_mesh**2 + (vz_mesh / 40.0) ** 2) / 0.25)
+    parameters = np.array([[0.5, 0.05, 0.002, angle, 40.0, 0.09] for angle in (-np.pi / 2, np.pi / 2)])
+    truth = PSpiralModel(parameters, z_mesh, vz_mesh, background)
+    data = truth.prediction()
+    data *= 100_000 / data.sum()
+    supplied_background = background * background_scale
+    original_background = supplied_background.copy()
+    fitter = PSpiralFitter(
+        bounds=[ParameterBounds(b=0.05, c=0.002, theta0=angle, scale_factor=40.0, rho=0.09) for angle in (-np.pi / 2, np.pi / 2)],
+        mask_func=lambda z, vz: np.ones_like(z),
+    )
+    outcome = fitter.fit_spiral_with_background(
+        data,
+        supplied_background,
+        z_mesh,
+        vz_mesh,
+        num_components=2,
+        winding=1,
+        improve_background=False,
+        rng=np.random.default_rng(12),
+    )
+    assert isinstance(outcome, FitSuccess)
+    result = outcome.result
+    np.testing.assert_allclose(result.final_model.parameters[:, 0], 0.5, atol=1e-5)
+    assert result.final_model.prediction().sum() == pytest.approx(data.sum())
+    assert result.lnl == pytest.approx(ln_likelihood(data, result.final_model.prediction(), np.ones_like(data)))
+    assert result.lnl == pytest.approx(0.0, abs=1e-7)
+    np.testing.assert_array_equal(supplied_background, original_background)
+    assert result.final_model.background.sum() < data.sum()
