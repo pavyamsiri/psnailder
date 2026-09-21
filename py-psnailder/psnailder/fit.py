@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, override
 
 import numpy as np
 import optype as op
@@ -16,7 +17,7 @@ from ._likelihood_utils import ln_likelihood
 from .model import PSpiralModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Sequence
+    from collections.abc import Callable, Generator
 
     from optype import numpy as onp
 
@@ -334,6 +335,45 @@ class ParameterBounds:
         ParameterBounds._validate_nonnegative("c", self.c)
         ParameterBounds._validate_positive("scale_factor", self.scale_factor)
         ParameterBounds._validate_nonnegative("rho", self.rho)
+
+    @staticmethod
+    def default() -> ParameterBounds:
+        """Construct default bounds.
+
+        Returns
+        -------
+        ParameterBounds
+            The default bounds.
+
+        """
+
+        return ParameterBounds(
+            alpha=(0.0, 1.0),
+            b=(0.005, 0.1),
+            c=(0.0, 0.004),
+            theta0=(-np.pi, np.pi),
+            scale_factor=(30.0, 70.0),
+            rho=(0.0, 0.18),
+        )
+
+    @override
+    def __str__(self) -> str:
+        buffer = f"{type(self).__name__}("
+        for idx, (name, bound) in enumerate(
+            (
+                ("alpha", self.alpha),
+                ("b", self.b),
+                ("c", self.c),
+                ("theta0", self.theta0),
+                ("scale_factor", self.scale_factor),
+                ("rho", self.rho),
+            )
+        ):
+            if idx > 0:
+                buffer += ", "
+            buffer += f"{name}={bound}"
+        buffer += ")"
+        return buffer
 
     @staticmethod
     def _parse_bounds(value: object) -> Interval | Fixed:
