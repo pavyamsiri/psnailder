@@ -173,6 +173,20 @@ type FitEvent = FitProgress | FitSuccess | FitFailure
 
 
 def create_gaussian_smoother(sigma: float) -> _SmoothingFunc:
+    """Return a function that applies Gaussian smoothing to a 2D array.
+
+    Parameters
+    ----------
+    sigma : float
+        The smoothing width in units of pixels (for each axis).
+
+    Returns
+    -------
+    func : Callable[[Array2D[f64]], Array2D[f64]]
+        The Gaussian smoothing function.
+
+    """
+
     def _func(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         return ndimage.gaussian_filter(arr, sigma=sigma)
 
@@ -180,6 +194,24 @@ def create_gaussian_smoother(sigma: float) -> _SmoothingFunc:
 
 
 def create_sigmoid_mask(z_scale: float, vz_scale: float) -> _MaskFunc:
+    """Return a function that creates a sigmoid mask given a mesh over z and vz.
+
+    The mask is parameterised by the scale length and scale velocity.
+
+    Parameters
+    ----------
+    z_scale : float
+        The scale length.
+    vz_scale : float
+        The scale velocity.
+
+    Returns
+    -------
+    func : Callable[[Array2D[f64], Array2D[f64]], Array2D[f64]]
+        The sigmoid mask function.
+
+    """
+
     def _func(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         return -special.expit(np.square(z_mesh / z_scale) + np.square(vz_mesh / vz_scale) - 1.0) + 1.0
 
