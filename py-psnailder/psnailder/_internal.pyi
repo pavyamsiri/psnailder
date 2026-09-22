@@ -51,6 +51,21 @@ class PSpiralFitter:
         sigma_vz: float = 2.0,
         bounds: Sequence[Sequence[tuple[float, float]]] | None = None,
     ) -> None: ...
+    def fit_batch(
+        self,
+        inputs: Sequence[
+            tuple[
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                tuple[int, int],
+            ]
+        ],
+        *,
+        workers: int | None = None,
+    ) -> list[PSpiralFitResult]: ...
     def fit_spiral_with_background(
         self,
         initial_density: onp.Array1D[np.float64],

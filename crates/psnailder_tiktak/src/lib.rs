@@ -356,7 +356,6 @@ impl<const N: usize> TikTak<N> {
             + basin::BoxConstraints,
         C::Error: Send + fmt::Display,
     {
-        use rayon::prelude::*;
         let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
 
         let evaluated_points: Vec<_> = self

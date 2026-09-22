@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Generator, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Final, Literal, override
 
 import numpy as np
@@ -186,6 +187,24 @@ class PythonFitBackend(FitBackend):
             msg = "Not enough bounds for the requested component count."
             raise ValueError(msg)
         return self._bounds[:num_components]
+
+    @override
+    def fit_batch(self, requests: Sequence[FitRequest], *, workers: int | None = None) -> list[BackendResult]:
+        """Fit independently in threads and collect terminal outcomes in input order.
+
+        Each request owns its fitting state. Custom mask and smoothing callbacks
+        must support concurrent calls; use workers=1 for serial callbacks.
+        Exceptions propagate as they do for a single fit.
+        """
+        if workers is not None and (type(workers) is not int or workers < 1):
+            msg = "workers must be a positive integer or None."
+            raise ValueError(msg)
+        if not requests:
+            return []
+        if workers == 1:
+            return [self.fit(request) for request in requests]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            return list(executor.map(self.fit, requests))
 
     @override
     def fit(

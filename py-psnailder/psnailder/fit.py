@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -44,6 +45,7 @@ __all__: list[str] = [
     "FitEvent",
     "FitFailure",
     "FitFailureReason",
+    "FitInput",
     "FitOutcome",
     "FitProgress",
     "FitSuccess",
@@ -65,6 +67,29 @@ __all__: list[str] = [
 
 type FitOutcome = BackendResult
 type FitEvent = BackendEvent
+
+
+@dataclass(frozen=True, kw_only=True)
+class FitInput:
+    """Prepared grids and options for one item in :meth:`PSpiralFitter.fit_batch`.
+
+    ``density``, ``background``, ``z_mesh`` and ``vz_mesh`` must share a 2D
+    shape, with rows along vz and columns along z. Different batch items may
+    have different shapes. Arrays are retained by reference; do not mutate
+    them during fitting. Options have the same meanings as in
+    ``fit_spiral_with_background``. Supply a separate random generator for
+    each item when reproducible Python optimization is required.
+    """
+
+    density: onp.Array2D[np.float64]
+    background: onp.Array2D[np.float64]
+    z_mesh: onp.Array2D[np.float64]
+    vz_mesh: onp.Array2D[np.float64]
+    winding: Literal[-1, 1] | None = None
+    warm_start: onp.Array1D[np.float64] | None = None
+    rng: np.random.Generator | None = None
+    num_components: int | None = None
+    improve_background: bool = True
 
 
 class PSpiralFitter:
@@ -135,6 +160,59 @@ class PSpiralFitter:
         else:
             msg = "Only `python` and `rust` backends are currently supported."  # pyright: ignore[reportUnreachable]
             raise ValueError(msg)
+
+    def fit_batch(self, inputs: Sequence[FitInput], *, workers: int | None = None) -> list[FitOutcome]:
+        """Fit prepared grids as a batch using the configured backend.
+
+        Parameters
+        ----------
+        inputs : Sequence[FitInput]
+            Prepared grids and per-fit options. Fitter configuration is shared
+            across all items.
+        workers : int or None
+            Positive worker limit for the batch. One requests serial execution;
+            None lets the backend choose. Rust shares this limit between
+            batch fitting and inner optimization. Python uses a thread pool;
+            None uses ThreadPoolExecutor's default worker count. Python control
+            flow remains subject to the GIL on GIL-enabled interpreters.
+
+        Returns
+        -------
+        list[FitOutcome]
+            One terminal success or failure per input, in input order.
+            Individual fitting failures retain their position in the list.
+
+        Raises
+        ------
+        ValueError
+            If workers is not a positive integer or None.
+
+        Notes
+        -----
+        Custom mask and smoothing callbacks must support concurrent calls when
+        using Python threads. Use workers=1 for serial execution. Give each input
+        its own random generator for reproducibility. Invalid inputs or callback
+        exceptions propagate to the caller, as with single fits.
+
+        """
+        if workers is not None and (type(workers) is not int or workers < 1):
+            msg = "workers must be a positive integer or None."
+            raise ValueError(msg)
+        requests = [
+            FitRequest(
+                initial_density=item.density,
+                initial_background=item.background,
+                z_mesh=item.z_mesh,
+                vz_mesh=item.vz_mesh,
+                winding=item.winding,
+                warm_start=item.warm_start,
+                rng=item.rng,
+                num_components=item.num_components,
+                improve_background=item.improve_background,
+            )
+            for item in inputs
+        ]
+        return self._backend.fit_batch(requests, workers=workers)
 
     def fit_spiral(
         self,

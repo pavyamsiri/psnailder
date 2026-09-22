@@ -181,6 +181,67 @@ class RustFitBackend(FitBackend):
         return tuple(serialized)
 
     @override
+    def fit_batch(self, requests: Sequence[FitRequest], *, workers: int | None = None) -> list[BackendResult]:
+        """Prepare grids, then fit the supported items in one native batch."""
+        if workers is not None and (type(workers) is not int or workers < 1):
+            msg = "workers must be a positive integer or None."
+            raise ValueError(msg)
+        outcomes: dict[int, BackendResult] = {}
+        indices: list[int] = []
+        inputs: list[
+            tuple[
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                onp.Array1D[np.float64],
+                tuple[int, int],
+            ]
+        ] = []
+        for index, request in enumerate(requests):
+            unsupported = self._unsupported_reason(request)
+            if unsupported is not None:
+                outcomes[index] = self._failure(unsupported)
+                continue
+            grids = (request.initial_density, request.initial_background, request.z_mesh, request.vz_mesh)
+            shape = request.initial_density.shape
+            if any(grid.ndim != 2 or grid.shape != shape for grid in grids):
+                msg = "Batch grids must share a 2D shape within each input."
+                raise ValueError(msg)
+            mask = self._mask_func(request.z_mesh, request.vz_mesh)
+            if mask.shape != shape:
+                msg = "Batch mask must match the grid shape."
+                raise ValueError(msg)
+            if any(not np.all(np.isfinite(grid)) for grid in (*grids, mask)):
+                msg = "Batch grids and masks must be finite."
+                raise ValueError(msg)
+            if np.any(mask < 0) or not np.any(mask > 0):
+                msg = "Batch masks must have nonnegative weights with at least one positive weight."
+                raise ValueError(msg)
+            if any(np.any(grid < 0) or not np.isfinite(grid.sum()) or grid.sum() <= 0 for grid in grids[:2]):
+                outcomes[index] = self._failure("Counts and background must have positive finite totals and nonnegative values.")
+                continue
+            inputs.append(
+                (
+                    request.initial_density.ravel(),
+                    request.initial_background.ravel(),
+                    mask.ravel(),
+                    request.z_mesh.ravel(),
+                    request.vz_mesh.ravel(),
+                    shape,
+                )
+            )
+            indices.append(index)
+        if inputs:
+            native_results = self._rust_fitter.fit_batch(inputs, workers=workers)
+            for index, result in zip(indices, native_results, strict=True):
+                outcomes[index] = FitSuccess(
+                    result=self._convert_result(result, requests[index]),
+                    diagnostics=self._rust_diagnostics(result),
+                )
+        return [outcomes[index] for index in range(len(requests))]
+
+    @override
     def fit(self, request: FitRequest) -> BackendResult:
         unsupported = self._unsupported_reason(request)
         if unsupported is not None:

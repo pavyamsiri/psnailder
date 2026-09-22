@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, override
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
     from typing import Literal
 
     import numpy as np
@@ -298,4 +298,8 @@ class SigmoidMaskConfig(MaskConfig):
 
 class FitBackend(Protocol):
     def fit(self, request: FitRequest) -> BackendResult: ...
+    def fit_batch(self, requests: Sequence[FitRequest], *, workers: int | None = None) -> list[BackendResult]:
+        """Return one terminal outcome per request, in input order."""
+        ...
+
     def fit_events(self, request: FitRequest) -> Iterator[BackendEvent]: ...

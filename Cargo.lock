@@ -1095,6 +1095,7 @@ dependencies = [
  "psnailder_fit",
  "psnailder_tiktak",
  "pyo3",
+ "rayon",
  "statrs",
 ]
 

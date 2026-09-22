@@ -2,6 +2,7 @@ use numpy::{PyArray1, PyReadonlyArray1};
 use psnailder_core::{PSpiralComponent as RustComponent, PSpiralModel as RustModel};
 use psnailder_fit::{PSpiralFitter as RustFitter, PSpiralFitterND};
 use pyo3::{exceptions::PyValueError, prelude::*};
+use rayon::prelude::*;
 use statrs::distribution::ContinuousCDF;
 
 #[pyclass(from_py_object)]
@@ -227,6 +228,55 @@ pub struct PSpiralFitter {
     inner: RustFitter,
 }
 
+// The Python arrays are copied before detaching from the interpreter.
+type BatchInput<'py> = (
+    PyReadonlyArray1<'py, f64>,
+    PyReadonlyArray1<'py, f64>,
+    PyReadonlyArray1<'py, f64>,
+    PyReadonlyArray1<'py, f64>,
+    PyReadonlyArray1<'py, f64>,
+    (usize, usize),
+);
+
+impl PSpiralFitter {
+    fn convert_result(
+        py: Python<'_>,
+        res: psnailder_fit::PSpiralFitResult,
+        mask: &[f64],
+    ) -> PyResult<PSpiralFitResult> {
+        let dof = (6 * res.final_model.components.len()) as f64;
+        let dist =
+            statrs::distribution::ChiSquared::new(dof).expect("`freedom` is guaranteed positive.");
+        let lnl_initial_null =
+            psnailder_core::ln_likelihood(&res.data, &res.initial_background, mask);
+        let lnl_final_null = psnailder_core::ln_likelihood(&res.data, &res.final_background, mask);
+        let lnl_initial = res.initial_lnl;
+        let lnl_final = res.final_lnl;
+        let lambda_initial = -2.0 * (lnl_initial_null - lnl_initial);
+        let lambda_final = -2.0 * (lnl_final_null - lnl_final);
+
+        let initial_pvalue = dist.sf(lambda_initial);
+        let final_pvalue = dist.sf(lambda_final);
+
+        Ok(PSpiralFitResult {
+            initial_model: PSpiralModel(res.initial_model),
+            final_model: PSpiralModel(res.final_model),
+            data: PyArray1::from_vec(py, res.data.to_vec()).into(),
+            initial_background: PyArray1::from_vec(py, res.initial_background.to_vec()).into(),
+            final_background: PyArray1::from_vec(py, res.final_background.to_vec()).into(),
+            num_iterations: res.num_iterations,
+            max_iterations: res.max_iterations,
+            converged: res.converged,
+            lnl: res.final_lnl,
+            initial_pvalue,
+            final_pvalue,
+            nfev: res.nfev,
+            nit: res.nit,
+            terminal: res.terminal,
+        })
+    }
+}
+
 #[pymethods]
 impl PSpiralFitter {
     #[new]
@@ -353,37 +403,73 @@ impl PSpiralFitter {
             shape,
         );
 
-        let dof = (6 * res.final_model.components.len()) as f64;
-        let dist =
-            statrs::distribution::ChiSquared::new(dof).expect("`freedom` is guaranteed positive.");
-        let lnl_initial_null =
-            psnailder_core::ln_likelihood(initial_density, &res.initial_background, mask);
-        let lnl_final_null =
-            psnailder_core::ln_likelihood(initial_density, &res.final_background, mask);
-        let lnl_initial = res.initial_lnl;
-        let lnl_final = res.final_lnl;
-        let lambda_initial = -2.0 * (lnl_initial_null - lnl_initial);
-        let lambda_final = -2.0 * (lnl_final_null - lnl_final);
+        Self::convert_result(py, res, mask)
+    }
 
-        let initial_pvalue = dist.sf(lambda_initial);
-        let final_pvalue = dist.sf(lambda_final);
-
-        Ok(PSpiralFitResult {
-            initial_model: PSpiralModel(res.initial_model),
-            final_model: PSpiralModel(res.final_model),
-            data: PyArray1::from_vec(py, res.data.to_vec()).into(),
-            initial_background: PyArray1::from_vec(py, res.initial_background.to_vec()).into(),
-            final_background: PyArray1::from_vec(py, res.final_background.to_vec()).into(),
-            num_iterations: res.num_iterations,
-            max_iterations: res.max_iterations,
-            converged: res.converged,
-            lnl: res.final_lnl,
-            initial_pvalue,
-            final_pvalue,
-            nfev: res.nfev,
-            nit: res.nit,
-            terminal: res.terminal,
-        })
+    /// Copy a batch into Rust storage, then fit inside one shared Rayon pool.
+    #[pyo3(signature = (inputs, *, workers=None))]
+    pub fn fit_batch(
+        &self,
+        py: Python<'_>,
+        inputs: Vec<BatchInput<'_>>,
+        workers: Option<usize>,
+    ) -> PyResult<Vec<PSpiralFitResult>> {
+        if workers == Some(0) {
+            return Err(PyValueError::new_err("workers must be positive"));
+        }
+        let owned = inputs
+            .into_iter()
+            .map(|(data, background, mask, x, y, shape)| {
+                let arrays = [data, background, mask, x, y];
+                let size = shape
+                    .0
+                    .checked_mul(shape.1)
+                    .filter(|size| *size > 0)
+                    .ok_or_else(|| {
+                        PyValueError::new_err("batch shapes must be nonempty and not overflow")
+                    })?;
+                let copies = arrays
+                    .iter()
+                    .map(|array| {
+                        let slice = array.as_slice()?;
+                        if slice.len() != size || slice.iter().any(|value| !value.is_finite()) {
+                            return Err(PyValueError::new_err(
+                                "batch arrays must be finite and match their shape",
+                            ));
+                        }
+                        Ok(slice.to_vec())
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                Ok((copies, shape))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        if owned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let results = py.detach(|| {
+            let mut builder = rayon::ThreadPoolBuilder::new();
+            if let Some(workers) = workers {
+                builder = builder.num_threads(workers);
+            }
+            let pool = builder
+                .build()
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            Ok::<_, PyErr>(pool.install(|| {
+                owned
+                    .par_iter()
+                    .map(|(arrays, shape)| {
+                        self.inner.fit_spiral_with_background(
+                            &arrays[0], &arrays[1], &arrays[2], &arrays[3], &arrays[4], *shape,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }))
+        })?;
+        results
+            .into_iter()
+            .zip(&owned)
+            .map(|(result, (arrays, _))| Self::convert_result(py, result, &arrays[2]))
+            .collect()
     }
 
     /// Run the Rust refinement iterator and return every accepted checkpoint.
