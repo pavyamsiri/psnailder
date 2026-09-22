@@ -9,6 +9,7 @@ from scipy import optimize  # noqa: F401 -- retained as a compatibility patch ta
 
 from psnailder._backends import FitBackend, FitRequest
 from psnailder._python_backend import PythonFitBackend
+from psnailder._rust_backend import RustFitBackend
 
 from ._backends import (
     BackendEvent,
@@ -72,6 +73,7 @@ class PSpiralFitter:
     def __init__(
         self,
         *,
+        backend: Literal["python", "rust"] = "python",
         max_iterations: int | None = 50,
         atol: float = 0.0,
         rtol: float = 0.0,
@@ -83,6 +85,9 @@ class PSpiralFitter:
 
         Parameters
         ----------
+        backend : {"python", "rust"}
+            Backend selected for this fitter instance. The Rust backend currently
+            supports only the subset documented by `RustFitBackend`.
         max_iterations : int | None
             Maximum number of refinement attempts, excluding the initial fit.
             Default 50. Zero retains the initial fit; None imposes no iteration
@@ -108,14 +113,28 @@ class PSpiralFitter:
             affects the one-component candidate in automatic selection.
 
         """
-        self._backend: FitBackend = PythonFitBackend(
-            max_iterations=max_iterations,
-            atol=atol,
-            rtol=rtol,
-            smoothing_func=smoothing_func,
-            mask_func=mask_func,
-            bounds=bounds,
-        )
+        self._backend: FitBackend
+        if backend == "python":
+            self._backend = PythonFitBackend(
+                max_iterations=max_iterations,
+                atol=atol,
+                rtol=rtol,
+                smoothing_func=smoothing_func,
+                mask_func=mask_func,
+                bounds=bounds,
+            )
+        elif backend == "rust":
+            self._backend = RustFitBackend(
+                max_iterations=max_iterations,
+                atol=atol,
+                rtol=rtol,
+                smoothing_func=smoothing_func,
+                mask_func=mask_func,
+                bounds=bounds,
+            )
+        else:
+            msg = "Only `python` and `rust` backends are currently supported."  # pyright: ignore[reportUnreachable]
+            raise ValueError(msg)
 
     def fit_spiral(
         self,

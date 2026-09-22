@@ -67,6 +67,23 @@ def test_warm_start_forwarded_to_differential_evolution(num_components: int) -> 
     np.testing.assert_array_equal(result.result.final_model.to_array(), parameters)
 
 
+def test_rust_backend_can_be_selected() -> None:
+    """The facade constructs the Rust adapter and exposes its batch outcome."""
+    fitter = PSpiralFitter(backend="rust")
+    grid = np.ones((2, 2))
+    outcome = fitter.fit_spiral_with_background(grid, grid, grid, grid)
+    assert isinstance(outcome, FitSuccess | FitFailure)
+
+
+def test_rust_backend_rejects_python_callbacks() -> None:
+    """Unsupported Python callbacks become a structured backend failure."""
+    fitter = PSpiralFitter(backend="rust", mask_func=lambda z, _vz: np.ones_like(z))
+    grid = np.ones((2, 2))
+    outcome = fitter.fit_spiral_with_background(grid, grid, grid, grid)
+    assert isinstance(outcome, FitFailure)
+    assert "mask callbacks" in outcome.message
+
+
 @pytest.mark.parametrize("num_components", [1, 2])
 def test_warm_start_rejected_with_automatic_component_selection(num_components: int) -> None:
     """Neither a six- nor twelve-parameter guess can select a component count."""
