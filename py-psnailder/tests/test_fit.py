@@ -18,6 +18,7 @@ from psnailder.fit import (
     FitProgress,
     FitSuccess,
     FitTerminationReason,
+    OptimizationDiagnostics,
     PSpiralFitter,
     _OptimizationResult,
 )
@@ -31,7 +32,7 @@ def test_warm_start_forwarded_to_differential_evolution(num_components: int) -> 
     mesh = np.zeros_like(data)
     fitter = PSpiralFitter(max_iterations=1)
     rng = np.random.default_rng(42)
-    optimizer_result = OptimizeResult(x=parameters.copy(), fun=0.0, success=True)
+    optimizer_result = OptimizeResult(x=parameters.copy(), fun=0.0, success=True, nfev=10, nit=2, message="Converged")
 
     with patch("psnailder.fit.optimize.differential_evolution", return_value=optimizer_result) as optimizer:
         result = fitter.fit_spiral_with_background(
@@ -119,7 +120,14 @@ def test_background_refinement_result_consistency(
         guess: onp.Array1D[np.float64] | None,
         bounds: Bounds,
     ) -> _OptimizationResult:
-        return _OptimizationResult(parameters=parameters.copy(), cost=float(objective_func(parameters)), success=True)
+        return _OptimizationResult(
+            parameters=parameters.copy(),
+            cost=float(objective_func(parameters)),
+            success=True,
+            nfev=10,
+            nit=2,
+            message="Converged",
+        )
 
     def smooth(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         nonlocal smoothing_calls
@@ -159,6 +167,9 @@ def test_background_refinement_result_consistency(
 
     outcome = results[-1]
     assert isinstance(outcome, FitSuccess)
+    assert outcome.diagnostics.nfev == 10 * (1 + expected_iterations)
+    assert outcome.diagnostics.nit == 2 * (1 + expected_iterations)
+    assert all(event.diagnostics.nfev == 10 for event in results[:-1])
     final = outcome.result
     np.testing.assert_array_equal(final.initial_model.background, initial_background)
     assert final.lnl == pytest.approx(ln_likelihood(data, final.final_model.prediction(), mask))
@@ -196,13 +207,42 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     assert res.final_model.pvalue(res.data, fitter._mask_func(res.final_model.z_mesh, res.final_model.vz_mesh)) > 0.05
 
 
+@pytest.mark.parametrize("converged", [False, True])
+def test_optimizer_diagnostics_forwarded(converged: bool) -> None:
+    grid = np.ones((2, 2))
+    parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
+    result = OptimizeResult(x=parameters, fun=0.0, success=converged, message="Optimizer message", nfev=37, nit=4)
+    with patch("psnailder.fit.optimize.differential_evolution", return_value=result):
+        outcome = PSpiralFitter().fit_spiral_with_background(
+            grid,
+            grid,
+            grid,
+            grid,
+            num_components=1,
+            winding=1,
+            improve_background=False,
+        )
+    assert isinstance(outcome, FitSuccess)
+    assert outcome.diagnostics == OptimizationDiagnostics("Optimizer message", converged, 37, 4)
+
+
+def test_invalid_data_has_no_optimizer_work() -> None:
+    grid = np.zeros((2, 2))
+    with patch("psnailder.fit.optimize.differential_evolution") as optimizer:
+        outcome = PSpiralFitter().fit_spiral_with_background(grid, grid, grid, grid)
+    optimizer.assert_not_called()
+    assert isinstance(outcome, FitFailure)
+    assert outcome.diagnostics.nfev == outcome.diagnostics.nit == 0
+    assert not outcome.diagnostics.success
+
+
 @pytest.mark.parametrize("positive_valid", [True, False])
 @pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
 def test_winding_selection_retains_finite_candidate(positive_valid: bool, invalid: float) -> None:
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
     grid = np.ones((2, 2))
-    valid = _OptimizationResult(parameters=parameters, cost=0.0, success=True)
-    failed = _OptimizationResult(parameters=parameters, cost=invalid, success=False)
+    valid = _OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="Converged")
+    failed = _OptimizationResult(parameters=parameters, cost=invalid, success=False, nfev=20, nit=3, message="Failed")
     with patch.object(PSpiralFitter, "_optimize_parameters", side_effect=[valid, failed] if positive_valid else [failed, valid]):
         outcome = PSpiralFitter().fit_spiral_with_background(
             grid,
@@ -214,6 +254,12 @@ def test_winding_selection_retains_finite_candidate(positive_valid: bool, invali
         )
     assert isinstance(outcome, FitSuccess)
     assert outcome.result.final_model.winding == (1 if positive_valid else -1)
+    assert outcome.diagnostics == OptimizationDiagnostics(
+        message="Converged; Failed" if positive_valid else "Failed; Converged",
+        success=False,
+        nfev=30,
+        nit=5,
+    )
 
 
 @pytest.mark.parametrize("successful_count", [None, 1, 2, 0], ids=["neither", "one-arm", "two-arms", "both"])
@@ -235,13 +281,24 @@ def test_component_selection_retains_success(successful_count: int | None, impro
         param_count = bounds.lb.size // 6
         parameters = np.tile([0.0, 0.05, 0.002, 0.0, 40.0, 0.09], param_count)
         valid = calls <= 2 and (successful_count == 0 or param_count == successful_count)
-        return _OptimizationResult(parameters=parameters, cost=float(objective(parameters)) if valid else np.inf, success=valid)
+        return _OptimizationResult(
+            parameters=parameters,
+            cost=float(objective(parameters)) if valid else np.inf,
+            success=valid,
+            nfev=10,
+            nit=2,
+            message=f"Attempt {calls}",
+        )
 
     with patch.object(fitter, "_optimize_parameters", side_effect=optimize):
         events = list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid, winding=-1, improve_background=improve))
     assert len(events) == (2 if improve and successful_count is not None else 1)
     assert all(isinstance(event, FitProgress) for event in events[:-1])
     outcome = events[-1]
+    assert outcome.diagnostics.nfev == 10 * calls
+    assert outcome.diagnostics.nit == 2 * calls
+    assert outcome.diagnostics.success is (successful_count == 0 and not improve)
+    assert outcome.diagnostics.message == "; ".join(f"Attempt {i}" for i in range(1, calls + 1))
     if successful_count is None:
         assert isinstance(outcome, FitFailure)
         assert outcome.reason is FitFailureReason.NO_VALID_CANDIDATE
@@ -268,13 +325,17 @@ def test_invalid_background_retains_valid_fit(accepted_first: bool) -> None:
     with patch.object(
         fitter,
         "_optimize_parameters",
-        side_effect=[_OptimizationResult(parameters=parameters, cost=s, success=True) for s in scores],
+        side_effect=[
+            _OptimizationResult(parameters=parameters, cost=s, success=True, nfev=10, nit=2, message="Converged") for s in scores
+        ],
     ):
         events = list(fitter.fit_spiral_with_background_gen(data, background, mesh, mesh, winding=1, num_components=1))
     assert all(isinstance(event, FitProgress) for event in events[:-1])
     outcome = events[-1]
     assert isinstance(outcome, FitSuccess)
     assert outcome.result.reason is FitTerminationReason.INVALID_BACKGROUND_UPDATE
+    assert outcome.diagnostics.nfev == 10 * len(scores)
+    assert events[0].diagnostics.nfev == 10
     np.testing.assert_array_equal(outcome.result.final_model.background, data if accepted_first else background)
 
 
@@ -282,7 +343,9 @@ def test_zero_refinement_budget_retains_initial_fit() -> None:
     grid = np.ones((2, 2))
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
     with patch.object(
-        PSpiralFitter, "_optimize_parameters", return_value=_OptimizationResult(parameters=parameters, cost=0.0, success=True)
+        PSpiralFitter,
+        "_optimize_parameters",
+        return_value=_OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="Converged"),
     ) as optimizer:
         events = list(
             PSpiralFitter(max_iterations=0).fit_spiral_with_background_gen(
@@ -335,7 +398,7 @@ def test_selection_only_happens_once(
         params = np.tile(parameters, bounds.lb.size // 6)
         score = float(objective(params))
         scores.append(score)
-        return _OptimizationResult(parameters=params, cost=score, success=True)
+        return _OptimizationResult(parameters=params, cost=score, success=True, nfev=10, nit=2, message="Converged")
 
     def mask(z: onp.Array2D[np.float64], vz: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
         return np.ones_like(z)
@@ -355,6 +418,10 @@ def test_selection_only_happens_once(
                 )
             )
     initial_calls = (2 if num_components is None else 1) * (2 if winding is None else 1)
+    assert events[0].diagnostics.nfev == 10 * initial_calls
+    assert events[1].diagnostics.nfev == 10
+    assert events[-1].diagnostics.nfev == 10 * (initial_calls + 1)
+    assert events[-1].diagnostics.nit == 2 * (initial_calls + 1)
     assert optimizer.call_count == initial_calls + 1
     mask_factory.assert_called_once()
     assert all(seen is rng for seen in seen_rngs)
@@ -382,7 +449,7 @@ def test_sample_wrapper_forwards_rng_and_outcome() -> None:
     rng = np.random.default_rng(42)
     samples = np.array([-0.5, 0.5])
     bins = np.array([-1.0, 0.0, 1.0])
-    failure = FitFailure(FitFailureReason.NO_VALID_CANDIDATE, "No candidate.")
+    failure = FitFailure(FitFailureReason.NO_VALID_CANDIDATE, "No candidate.", OptimizationDiagnostics("Not run", False, 0, 0))
     with patch("psnailder.fit.generate_initial_background", return_value=np.ones((2, 2))):
         with patch.object(fitter, "fit_spiral_with_background_gen", return_value=iter([failure])) as fit:
             outcome = fitter.fit_spiral(samples, samples, bins, bins, rng=rng)
@@ -400,7 +467,7 @@ def test_sample_background_accounts_for_bin_area(uniform: bool) -> None:
     vz = np.array([1.0, 2.5, 5.0, 1.0, 2.5, 5.0, 10.0])
     kde_density = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     original = kde_density.copy()
-    failure = FitFailure(FitFailureReason.NO_VALID_CANDIDATE, "Test sentinel")
+    failure = FitFailure(FitFailureReason.NO_VALID_CANDIDATE, "Test sentinel", OptimizationDiagnostics("Not run", False, 0, 0))
     fitter = PSpiralFitter()
     with patch("psnailder.fit.generate_initial_background", return_value=kde_density):
         with patch.object(fitter, "fit_spiral_with_background_gen", return_value=iter([failure])) as fit:

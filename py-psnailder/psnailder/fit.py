@@ -40,6 +40,7 @@ __all__: Final[list[str]] = [
     "FitFailure",
     "FitFailureReason",
     "FitTerminationReason",
+    "OptimizationDiagnostics",
     "PSpiralFitResult",
     "PSpiralFitter",
     "create_gaussian_smoother",
@@ -99,10 +100,13 @@ class FitSuccess:
     ----------
     result : PSpiralFitResult
         The successful result.
+    diagnostics : OptimizationDiagnostics
+        The overall diagnostics of all optimization attempts, including rejected fits.
 
     """
 
     result: PSpiralFitResult
+    diagnostics: OptimizationDiagnostics
 
 
 @dataclass(frozen=True)
@@ -118,11 +122,14 @@ class FitFailure:
         The reason for failure.
     message : str
         An accompanying message.
+    diagnostics : OptimizationDiagnostics
+        The overall diagnostics of all optimizations up to failure.
 
     """
 
     reason: FitFailureReason
     message: str
+    diagnostics: OptimizationDiagnostics
 
 
 @dataclass(frozen=True)
@@ -137,6 +144,8 @@ class FitProgress:
         The refinement step; zero denotes the initial fit.
     lnl : float
         The score of model.prediction() against the data and fitting mask.
+    diagnostics : OptimizationDiagnostics
+        Work for this step. At iteration zero this includes component and winding selection.
 
     Notes
     -----
@@ -149,6 +158,7 @@ class FitProgress:
     model: PSpiralModel
     iteration: int
     lnl: float
+    diagnostics: OptimizationDiagnostics
 
 
 @dataclass
@@ -246,12 +256,57 @@ class _OptimizationResult:
         The minimized cost.
     success : bool
         Whether optimization was successful.
+    nfev : int
+        The number of function evaluations done during optimization.
+    nit : int
+        The number of optimization iterations.
 
     """
 
     parameters: onp.Array1D[np.float64]
     cost: float
     success: bool
+    nfev: int
+    nit: int
+    message: str
+
+    @property
+    def diagnostics(self) -> OptimizationDiagnostics:
+        return OptimizationDiagnostics(message=self.message, success=self.success, nfev=self.nfev, nit=self.nit)
+
+
+@dataclass(frozen=True)
+class OptimizationDiagnostics:
+    """The parameter optimization's diagnostics.
+
+    Attributes
+    ----------
+    message : str
+        The optimizer's diagnostic message.
+    success : bool
+        Whether every included optimizer converged. A valid fit can still have
+        success=False, for example after an optimizer iteration limit.
+    nfev : int
+        The number of function evaluations done during optimization.
+    nit : int
+        The sum of optimizer iterations, not background refinement attempts.
+
+    """
+
+    message: str
+    success: bool
+    nfev: int
+    nit: int
+
+
+def _combine_diagnostics(*items: OptimizationDiagnostics) -> OptimizationDiagnostics:
+    """Combine disjoint attempts into an immutable snapshot."""
+    return OptimizationDiagnostics(
+        message="; ".join(item.message for item in items),
+        success=all(item.success for item in items),
+        nfev=sum(item.nfev for item in items),
+        nit=sum(item.nit for item in items),
+    )
 
 
 class PSpiralFitter:
@@ -625,7 +680,14 @@ class PSpiralFitter:
         if bounds.lb.size == 0:
             parameters = np.empty(0, dtype=np.float64)
             cost = objective(parameters)
-            return _OptimizationResult(parameters=parameters, cost=cost, success=bool(np.isfinite(cost)))
+            return _OptimizationResult(
+                parameters=parameters,
+                cost=cost,
+                success=bool(np.isfinite(cost)),
+                nfev=1,
+                nit=0,
+                message="All parameters fixed; evaluated objective once.",
+            )
 
         res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
         if not res.success:
@@ -634,6 +696,9 @@ class PSpiralFitter:
             parameters=res.x,
             cost=res.fun,
             success=res.success,
+            nfev=res.nfev,
+            nit=res.nit,
+            message=str(res.message),
         )
 
     def _establish_initial_fit(
@@ -692,7 +757,9 @@ class PSpiralFitter:
         # Both fits failed
         if isinstance(res1, FitFailure) and isinstance(res2, FitFailure):
             return FitFailure(
-                FitFailureReason.NO_VALID_CANDIDATE, "No valid candidate found for either 1-component and 2-component fits."
+                FitFailureReason.NO_VALID_CANDIDATE,
+                "No valid candidate found for either 1-component and 2-component fits.",
+                _combine_diagnostics(res1.diagnostics, res2.diagnostics),
             )
         # 1-component fit succeeded while 2-component fit failed
         elif isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
@@ -714,7 +781,10 @@ class PSpiralFitter:
             b2 = k2 * np.log(num_particles) - 2.0 * q2
             selected = res2.result if b2 < b1 else res1.result
 
-        return FitSuccess(selected)
+        return FitSuccess(
+            selected,
+            diagnostics=_combine_diagnostics(res1.diagnostics, res2.diagnostics),
+        )
 
     def _fit_with_fixed_background(
         self,
@@ -736,7 +806,9 @@ class PSpiralFitter:
         density_total = np.sum(density)
         if not np.isfinite(density_total) or density_total <= 0:
             return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Total observed count must be positive and finite."
+                reason=FitFailureReason.NO_VALID_CANDIDATE,
+                message="Total observed count must be positive and finite.",
+                diagnostics=OptimizationDiagnostics(message="No optimization took place.", success=False, nfev=0, nit=0),
             )
 
         def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
@@ -757,6 +829,7 @@ class PSpiralFitter:
         if winding is None:
             pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=free_guess, bounds=bounds)
             neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=free_guess, bounds=bounds)
+            diagnostics = _combine_diagnostics(pos_res.diagnostics, neg_res.diagnostics)
             if np.isfinite(pos_res.cost) and (not np.isfinite(neg_res.cost) or pos_res.cost <= neg_res.cost):
                 chosen_winding = 1
                 res = pos_res
@@ -768,20 +841,29 @@ class PSpiralFitter:
             # Optimize for chosen winding.
             chosen_winding = winding
             res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=free_guess, bounds=bounds)
+            diagnostics = res.diagnostics
+
         if not np.isfinite(res.cost):
-            return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.")
+            return FitFailure(
+                reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.", diagnostics=diagnostics
+            )
+
         params: onp.Array2D[np.float64] = layout.unpack(res.parameters).reshape((num_components, 6))
         model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
         prediction_total = np.sum(model.prediction())
         if not np.isfinite(prediction_total) or prediction_total <= 0:
             return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Total predicted count must be positive and finite."
+                reason=FitFailureReason.NO_VALID_CANDIDATE,
+                message="Total predicted count must be positive and finite.",
+                diagnostics=diagnostics,
             )
         # Store the winning scale without mutating the caller's background.
         model.background = background * (density_total / prediction_total)
         final_lnl = ln_likelihood(density, model.prediction(), mask)
         if not np.isfinite(final_lnl):
-            return FitFailure(reason=FitFailureReason.NO_VALID_CANDIDATE, message="Normalized prediction is invalid.")
+            return FitFailure(
+                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Normalized prediction is invalid.", diagnostics=diagnostics
+            )
         return FitSuccess(
             PSpiralFitResult(
                 initial_model=model,
@@ -791,7 +873,8 @@ class PSpiralFitter:
                 max_iterations=self._max_iterations,
                 lnl=final_lnl,
                 reason=FitTerminationReason.FIXED_BACKGROUND,
-            )
+            ),
+            diagnostics=diagnostics,
         )
 
     def _refine_background_gen(
@@ -804,7 +887,8 @@ class PSpiralFitter:
         vz_mesh: onp.Array2D[np.float64] = initial_model.vz_mesh
         num_components: int = initial_fit.result.final_model.num_components
         accepted: tuple[PSpiralModel, float] = (initial_model, initial_lnl)
-        yield FitProgress(model=initial_model, lnl=initial_lnl, iteration=0)
+        diagnostics = initial_fit.diagnostics
+        yield FitProgress(model=initial_model, lnl=initial_lnl, iteration=0, diagnostics=diagnostics)
 
         num_iterations: int = 0
         initial_density: Final[onp.Array2D[np.float64]] = initial_fit.result.data
@@ -825,7 +909,8 @@ class PSpiralFitter:
                         num_iterations=num_iterations,
                         max_iterations=self._max_iterations,
                         reason=FitTerminationReason.INVALID_BACKGROUND_UPDATE,
-                    )
+                    ),
+                    diagnostics=diagnostics,
                 )
                 return
 
@@ -840,6 +925,8 @@ class PSpiralFitter:
                 guess=current_model.parameters.flatten(),
                 winding=initial_model.winding,
             )
+            # Count rejected and failed attempts too; progress only reports accepted steps.
+            diagnostics = _combine_diagnostics(diagnostics, candidate.diagnostics)
 
             if isinstance(candidate, FitFailure):
                 yield FitSuccess(
@@ -851,7 +938,8 @@ class PSpiralFitter:
                         num_iterations=num_iterations,
                         max_iterations=self._max_iterations,
                         reason=FitTerminationReason.FAILED_REOPTIMIZATION,
-                    )
+                    ),
+                    diagnostics=diagnostics,
                 )
                 return
 
@@ -866,7 +954,8 @@ class PSpiralFitter:
                         num_iterations=num_iterations,
                         max_iterations=self._max_iterations,
                         reason=FitTerminationReason.NO_IMPROVEMENT,
-                    )
+                    ),
+                    diagnostics=diagnostics,
                 )
                 return
 
@@ -875,6 +964,7 @@ class PSpiralFitter:
                 model=candidate.result.final_model,
                 iteration=num_iterations,
                 lnl=candidate.result.lnl,
+                diagnostics=candidate.diagnostics,
             )
         yield FitSuccess(
             PSpiralFitResult(
@@ -885,7 +975,8 @@ class PSpiralFitter:
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
                 reason=FitTerminationReason.ITERATION_LIMIT,
-            )
+            ),
+            diagnostics=diagnostics,
         )
 
 

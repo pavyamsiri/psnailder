@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
-from psnailder.fit import Fixed, Interval, ParameterBounds, PSpiralFitter, FitSuccess, _ParameterLayout
+from psnailder.fit import Fixed, Interval, ParameterBounds, PSpiralFitter, FitSuccess
+from psnailder.param_layout import ParameterLayout as _ParameterLayout
 from psnailder._likelihood_utils import ln_likelihood
+from psnailder.model import PSpiralModel
 
 
 def arm(alpha: Interval | Fixed = Fixed(0.0), theta: float = 0.0) -> ParameterBounds:
@@ -41,7 +43,7 @@ def test_broadcast_free_parameters_remain_independent() -> None:
     guess = np.array([0.2, 0.05, 0.0, 0.0, 40.0, 0.09, 0.7, 0.05, 0.0, 0.0, 40.0, 0.09])
     with patch(
         "psnailder.fit.optimize.differential_evolution",
-        return_value=OptimizeResult(x=np.array([0.2, 0.7]), fun=0.0, success=True),
+        return_value=OptimizeResult(x=np.array([0.2, 0.7]), fun=0.0, success=True, nfev=10, nit=2, message="Converged"),
     ) as optimizer:
         outcome = fitter.fit_spiral_with_background(
             grid,
@@ -91,6 +93,9 @@ def test_all_fixed_skips_de(count: int, winding: Literal[-1, 1] | None) -> None:
     assert isinstance(outcome, FitSuccess)
     assert outcome.result.final_model.parameters.shape == (count, 6)
     assert outcome.result.lnl == 0.0
+    assert outcome.diagnostics.nfev == (2 if winding is None else 1)
+    assert outcome.diagnostics.nit == 0
+    assert outcome.diagnostics.success
 
 
 def test_reduced_guess_and_expanded_result() -> None:
@@ -99,7 +104,7 @@ def test_reduced_guess_and_expanded_result() -> None:
     grid = np.ones((2, 2))
     with patch(
         "psnailder.fit.optimize.differential_evolution",
-        return_value=OptimizeResult(x=np.array([0.2, 0.7]), fun=0.0, success=True),
+        return_value=OptimizeResult(x=np.array([0.2, 0.7]), fun=0.0, success=True, nfev=10, nit=2, message="Converged"),
     ) as de:
         outcome = fitter.fit_spiral_with_background(
             grid, grid, grid, grid, num_components=2, winding=1, warm_start=guess, improve_background=False
@@ -121,12 +126,13 @@ def test_insufficient_bounds_fail_before_optimization(count: int | None) -> None
 
 
 def test_bic_counts_fixed_parameters_as_zero() -> None:
-    # At the origin, the second arm produces a stronger signal and a slightly
-    # better score. Neither model has free parameters, so BIC must select it.
+    # Use a shape difference: a constant amplitude difference disappears when
+    # predictions are normalized to the observed total.
     fitter = PSpiralFitter(bounds=[arm(), arm(Fixed(0.5))])
-    data = np.full((2, 2), 2.0)
-    background = np.ones_like(data)
-    coordinates = np.zeros_like(data)
+    background = np.ones((2, 2))
+    coordinates = np.array([[0.0, 0.1], [0.2, 0.3]])
+    parameters = np.array([[0.0, 0.05, 0.0, 0.0, 40.0, 0.09], [0.5, 0.05, 0.0, 0.0, 40.0, 0.09]])
+    data = PSpiralModel(parameters, coordinates, coordinates, background, winding=1).prediction()
     outcome = fitter.fit_spiral_with_background(data, background, coordinates, coordinates, winding=1, improve_background=False)
     assert isinstance(outcome, FitSuccess)
     assert outcome.result.final_model.num_components == 2
