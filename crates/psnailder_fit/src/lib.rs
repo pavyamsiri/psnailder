@@ -960,13 +960,18 @@ impl Iterator for PSpiralFitterIterative<'_> {
             gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
         let mut blurred_background_vec = blurred_background.to_vec();
 
-        // NOTE: Do we need to do this? Normalising might lead to the background
-        // absorbing the perturbation but not sure.
-        // Normalise the background
-        let next_bg_sum: f64 = blurred_background_vec.iter().sum();
+        // Normalize the predicted counts, not the background alone. The
+        // background is multiplied by the current perturbation before it is
+        // compared with the observed density, so the relevant total is
+        // `sum(background * perturbation)`.
+        let predicted_count_sum: f64 = blurred_background_vec
+            .iter()
+            .zip(current_perturbation.iter())
+            .map(|(background, perturbation)| background * perturbation)
+            .sum();
         let density_sum: f64 = self.initial_density.iter().sum();
-        if next_bg_sum > 0.0 {
-            let scale = density_sum / next_bg_sum;
+        if predicted_count_sum.is_finite() && predicted_count_sum > 0.0 {
+            let scale = density_sum / predicted_count_sum;
             for current_background in blurred_background_vec.iter_mut() {
                 *current_background *= scale;
             }
