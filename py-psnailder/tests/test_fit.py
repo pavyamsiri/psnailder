@@ -180,6 +180,55 @@ def test_background_refinement_result_consistency(
     np.testing.assert_array_equal(final.final_model.background, data if accepts_background else initial_background)
 
 
+@pytest.mark.parametrize("name", ["atol", "rtol"])
+@pytest.mark.parametrize("value", [-1.0, np.nan, np.inf, -np.inf])
+def test_invalid_refinement_tolerance(name: str, value: float) -> None:
+    with pytest.raises(ValueError, match=f"{name} must be finite and nonnegative"):
+        if name == "atol":
+            PSpiralFitter(atol=value)
+        else:
+            PSpiralFitter(rtol=value)
+
+
+@pytest.mark.parametrize(
+    ("atol", "rtol", "converges"),
+    [(0.0, 0.0, False), (0.99, 0.0, False), (1.0, 0.0, True), (2.0, 0.0, True), (0.0, 1.0, True), (0.5, 0.5, True)],
+)
+@pytest.mark.parametrize("proposal", ["better", "equal", "worse"])
+@pytest.mark.parametrize("extra_budget", [0, 2])
+def test_refinement_tolerance(atol: float, rtol: float, converges: bool, proposal: str, extra_budget: int) -> None:
+    data = np.array([[1.0, 3.0], [2.0, 4.0]])
+    background = np.full_like(data, 2.5)
+    mesh = np.zeros_like(data)
+    proposed = {"better": data, "equal": background, "worse": np.array([[7.0, 1.0], [1.0, 1.0]])}[proposal]
+    parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
+    fitter = PSpiralFitter(
+        max_iterations=1 + extra_budget if converges else 1,
+        atol=atol,
+        rtol=rtol,
+        smoothing_func=lambda arr: proposed.copy(),
+        mask_func=lambda z, vz: np.ones_like(z),
+    )
+    optimizer_result = _OptimizationResult(parameters, 0.0, True, 10, 2, "Converged")
+    with patch.object(fitter, "_optimize_parameters", return_value=optimizer_result) as optimizer:
+        events = list(fitter.fit_spiral_with_background_gen(data, background, mesh, mesh, num_components=1, winding=1))
+    outcome = events[-1]
+    assert isinstance(outcome, FitSuccess)
+    expected_reason = (
+        (FitTerminationReason.CONVERGED if converges else FitTerminationReason.ITERATION_LIMIT)
+        if proposal == "better"
+        else FitTerminationReason.NO_IMPROVEMENT
+    )
+    assert outcome.result.reason is expected_reason
+    assert outcome.result.num_iterations == 1
+    assert outcome.result.lnl == pytest.approx(0.0 if proposal == "better" else -1.0)
+    np.testing.assert_array_equal(outcome.result.final_model.background, data if proposal == "better" else background)
+    assert len(events) == (3 if proposal == "better" else 2)
+    assert optimizer.call_count == 2
+    assert outcome.diagnostics.nfev == 20
+    assert events[0].diagnostics.nfev == 10
+
+
 @pytest.mark.parametrize("seed", range(3))
 def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     """ "Test that Gaussian distributed vertical phase space distributions have low improvement.

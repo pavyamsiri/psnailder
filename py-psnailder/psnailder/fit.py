@@ -55,6 +55,8 @@ class FitTerminationReason(StrEnum):
     --------
     NO_IMPROVEMENT
         Refinement stopped when background no longer improves i.e. background has converged.
+    CONVERGED
+        A positive improvement was accepted but did not exceed the refinement tolerance.
     ITERATION_LIMIT
         The refinement iteration limit was reached.
     FIXED_BACKGROUND
@@ -67,6 +69,7 @@ class FitTerminationReason(StrEnum):
     """
 
     NO_IMPROVEMENT = "no_improvement"
+    CONVERGED = "converged"
     ITERATION_LIMIT = "iteration_limit"
     FIXED_BACKGROUND = "fixed_background"
     INVALID_BACKGROUND_UPDATE = "invalid_background_update"
@@ -316,6 +319,8 @@ class PSpiralFitter:
         self,
         *,
         max_iterations: int | None = 50,
+        atol: float = 0.0,
+        rtol: float = 0.0,
         smoothing_func: _SmoothingFunc | None = None,
         mask_func: _MaskFunc | None = None,
         bounds: ParameterBounds | Sequence[ParameterBounds] | None = None,
@@ -331,6 +336,11 @@ class PSpiralFitter:
         smoothing_func : _SmoothingFunc | None
             Callable mapping a 2D background proposal to a same-shaped array.
             None uses a Gaussian smoother with sigma=2.0 grid cells.
+        atol, rtol : float
+            Finite, nonnegative background-refinement tolerances. Accept a positive
+            log-likelihood improvement and stop when it is at most
+            atol + rtol * abs(previous_lnl). Both default to zero, preserving
+            strict improvement. These do not change optimizer tolerances.
         mask_func : _MaskFunc | None
             Callable taking (z_mesh, vz_mesh) and returning same-shaped residual
             weights. None uses a sigmoid mask with scales 1.0 and 40.0 in the
@@ -347,6 +357,11 @@ class PSpiralFitter:
         if max_iterations is not None and max_iterations < 0:
             raise ValueError("max_iterations must be nonnegative or None.")
         self._max_iterations: int | None = max_iterations
+        for name, tolerance in (("atol", atol), ("rtol", rtol)):
+            if not np.isfinite(tolerance) or tolerance < 0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
+        self._atol = float(atol)
+        self._rtol = float(rtol)
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
@@ -891,6 +906,7 @@ class PSpiralFitter:
         yield FitProgress(model=initial_model, lnl=initial_lnl, iteration=0, diagnostics=diagnostics)
 
         num_iterations: int = 0
+        termination_reason = FitTerminationReason.ITERATION_LIMIT
         initial_density: Final[onp.Array2D[np.float64]] = initial_fit.result.data
         while self._max_iterations is None or (num_iterations < self._max_iterations):
             num_iterations += 1
@@ -960,12 +976,17 @@ class PSpiralFitter:
                 return
 
             accepted = (candidate.result.final_model, candidate.result.lnl)
+            converged = candidate.result.lnl - current_lnl <= self._atol + self._rtol * abs(current_lnl)
             yield FitProgress(
                 model=candidate.result.final_model,
                 iteration=num_iterations,
                 lnl=candidate.result.lnl,
                 diagnostics=candidate.diagnostics,
             )
+            # Improvement was too marginal and so we have converged
+            if converged:
+                termination_reason = FitTerminationReason.CONVERGED
+                break
         yield FitSuccess(
             PSpiralFitResult(
                 initial_model=initial_model,
@@ -974,7 +995,7 @@ class PSpiralFitter:
                 data=initial_density,
                 num_iterations=num_iterations,
                 max_iterations=self._max_iterations,
-                reason=FitTerminationReason.ITERATION_LIMIT,
+                reason=termination_reason,
             ),
             diagnostics=diagnostics,
         )

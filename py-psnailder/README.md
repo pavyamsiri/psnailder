@@ -88,7 +88,7 @@ and winding stay fixed during background refinement.
 
 `FitSuccess` means a valid fit exists, not that optimization or refinement
 necessarily converged. Inspect `result.reason`: `fixed_background`,
-`iteration_limit`, `no_improvement`, `invalid_background_update`, or
+`iteration_limit`, `converged`, `no_improvement`, `invalid_background_update`, or
 `failed_reoptimization`. If refinement fails after a valid fit exists, that fit
 is retained. Invalid configuration may still raise exceptions; the outcome API
 does not catch every possible input or numerical-library error.
@@ -149,6 +149,15 @@ disabled, only that terminal outcome is emitted.
 `max_iterations` counts refinement attempts, excluding the initial fit. Rejected
 attempts count even though they emit no progress snapshot. Zero keeps the initial
 fit; `None` removes the iteration cap. Refinement stops on an equal or worse score.
+
+Configure refinement tolerances with `PSpiralFitter(atol=1e-6, rtol=1e-4)`.
+A positive score improvement at most `atol + rtol * abs(previous_lnl)` is
+accepted and emitted as progress, then refinement stops with reason `converged`.
+An equal or worse score is never accepted and stops with `no_improvement`.
+Convergence takes precedence if it occurs on the last allowed iteration.
+Both tolerances must be finite and nonnegative and default to zero, preserving
+the previous behavior. They do not configure the underlying optimizer.
+
 `result.initial_model` is the selected initial fixed-background fit, not the warm
 start. Treat progress models and their arrays as read-only; they are not deeply
 immutable snapshots.
