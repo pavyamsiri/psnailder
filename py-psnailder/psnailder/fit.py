@@ -354,14 +354,20 @@ class PSpiralFitter:
             affects the one-component candidate in automatic selection.
 
         """
-        if max_iterations is not None and max_iterations < 0:
-            raise ValueError("max_iterations must be nonnegative or None.")
+        if max_iterations is not None and (
+            isinstance(max_iterations, bool) or not isinstance(max_iterations, (int, np.integer)) or max_iterations < 0
+        ):
+            msg = "max_iterations must be a nonnegative integer or None."
+            raise ValueError(msg)
         self._max_iterations: int | None = max_iterations
+
         for name, tolerance in (("atol", atol), ("rtol", rtol)):
             if not np.isfinite(tolerance) or tolerance < 0:
-                raise ValueError(f"{name} must be finite and nonnegative.")
-        self._atol = float(atol)
-        self._rtol = float(rtol)
+                msg = f"{name} must be finite and nonnegative."
+                raise ValueError(msg)
+
+        self._atol: float = float(atol)
+        self._rtol: float = float(rtol)
 
         self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
         self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
@@ -410,7 +416,7 @@ class PSpiralFitter:
             Shared optimization RNG. Supply a fresh np.random.default_rng(seed)
             for reproducible calls; reusing a generator advances its state.
         num_components : int or None
-            Positive component count, or None to compare one and two using BIC.
+            One or two components, or None to compare both using BIC.
         improve_background : bool
             Whether to refine after obtaining the initial fit. Default True.
 
@@ -424,6 +430,7 @@ class PSpiralFitter:
         --------
         fit_spiral_gen : Lazy version yielding progress and a terminal outcome.
         fit_spiral_with_background_gen : Common fitting-option semantics.
+
         """
         val = _get_value_from_gen(
             self.fit_spiral_gen(
@@ -472,20 +479,51 @@ class PSpiralFitter:
         --------
         fit_spiral : Sample arrays, bin edges, and fitting options.
         fit_spiral_with_background_gen : Event and warm-start semantics.
+
         """
+        # Validate bins
+        self._validate_fit_options(num_components, winding, warm_start)
         for name, edges in (("z_bins", z_bins), ("vz_bins", vz_bins)):
             if edges.ndim != 1 or edges.size < 2 or not np.all(np.isfinite(edges)) or np.any(np.diff(edges) <= 0):
-                raise ValueError(f"{name} must contain finite, strictly increasing bin edges.")
+                msg = f"{name} must contain finite, strictly increasing bin edges."
+                raise ValueError(msg)
+        # Validate dimensionality of z and vz
+        for name, ndim in (("z", z.ndim), ("vz", vz.ndim)):
+            if ndim != 1:
+                msg = f"`{name}` must be a 1D array."
+                raise ValueError(msg)
+        # Validate that arrays are the same shape
+        common_shape: tuple[int] = z.shape
+        for name, shape in (("z", z.shape), ("vz", vz.shape)):
+            if shape != common_shape:
+                msg = f"`{name}` was expected to have shape {common_shape} but was {shape}."
+                raise ValueError(msg)
+
+        if not np.all(np.isfinite(z)) or not np.all(np.isfinite(vz)):
+            raise ValueError("z and vz samples must be finite.")
+        if z.size < 2:
+            yield self._unusable_data("At least two samples are required for background estimation.")
+            return
 
         z_centres = 0.5 * (z_bins[:-1] + z_bins[1:])
         vz_centres = 0.5 * (vz_bins[:-1] + vz_bins[1:])
         z_mesh, vz_mesh = np.meshgrid(z_centres, vz_centres)
         density, _, _ = np.histogram2d(z, vz, bins=(z_bins, vz_bins), density=False)
         density = density.T
-        background = generate_initial_background(z, vz, z_mesh, vz_mesh)
+        if not np.any(density > 0):
+            yield self._unusable_data("No samples fall inside the fitting region.")
+            return
+        try:
+            background = generate_initial_background(z, vz, z_mesh, vz_mesh)
+        except np.linalg.LinAlgError as exc:
+            yield self._unusable_data(f"KDE background estimation failed: {exc}")
+            return
         # Midpoint density times bin area approximates probability mass.
         # Rows follow vz and columns follow z, matching the transposed counts.
         background = background * np.diff(vz_bins)[:, None] * np.diff(z_bins)[None, :]
+        if not self._valid_background(background):
+            yield self._unusable_data("KDE produced an invalid background.")
+            return
         # Normalize over the fitting region to match its observed count total.
         if np.sum(background) > 0:
             background = background / np.sum(background) * np.sum(density)
@@ -590,7 +628,7 @@ class PSpiralFitter:
             Random generator shared by selection and refinement. If None, a new
             generator is created. Pass np.random.default_rng(seed) to reproduce a fit.
         num_components : int | None
-            Positive component count, or None to compare one and two components
+            One or two components, or None to compare one and two components
             on the initial background using BIC and their free-parameter counts.
             Explicit bounds sequences use the first N entries for each candidate;
             automatic selection requires at least two entries. The chosen count
@@ -624,14 +662,20 @@ class PSpiralFitter:
         """
         # Yield progress snapshots, then exactly one terminal success or failure.
         # If given a warm start, the number of components must be explicitly set.
-        if warm_start is not None and num_components is None:
-            msg = "Can not use warm start if the number of component is not set."
-            raise ValueError(msg)
+        self._validate_fit_options(num_components, winding, warm_start)
 
         if rng is None:
             rng = np.random.default_rng()
 
+        PSpiralFitter._validate_array_inputs(initial_density, initial_background, z_mesh, vz_mesh)
+
         mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
+        self._validate_callback_shape("mask_func", mask, initial_density.shape)
+        if not np.all(np.isfinite(mask)) or np.any(mask < 0) or not np.any(mask > 0):
+            raise ValueError("mask_func must return finite, nonnegative weights with at least one positive weight.")
+        if not self._valid_background(initial_density) or not self._valid_background(initial_background):
+            yield self._unusable_data("Counts and background must have positive finite totals.")
+            return
 
         initial_fit = self._establish_initial_fit(
             initial_density,
@@ -660,6 +704,97 @@ class PSpiralFitter:
             mask,
             rng,
         )
+
+    @staticmethod
+    def _unusable_data(message: str) -> FitFailure:
+        return FitFailure(
+            FitFailureReason.NO_VALID_CANDIDATE,
+            message,
+            OptimizationDiagnostics("No optimization took place.", False, 0, 0),
+        )
+
+    def _validate_fit_options(
+        self,
+        num_components: int | None,
+        winding: int | None,
+        warm_start: onp.Array1D[np.float64] | None,
+    ) -> None:
+        if num_components is not None and (
+            isinstance(num_components, bool) or not isinstance(num_components, (int, np.integer)) or num_components not in (1, 2)
+        ):
+            raise ValueError("num_components must be 1 or 2, or None; check component bounds.")
+        if winding is not None and (
+            isinstance(winding, bool) or not isinstance(winding, (int, np.integer)) or winding not in (-1, 1)
+        ):
+            raise ValueError("winding must be -1 or 1, or None.")
+        if warm_start is not None and num_components is None:
+            raise ValueError("Can not use warm start if the number of component is not set.")
+        selected_bounds = self._component_bounds(num_components if num_components is not None else 2)
+        if warm_start is not None:
+            ParameterLayout.from_bounds(selected_bounds).pack(warm_start)
+
+    @staticmethod
+    def _validate_callback_shape(name: str, value: object, shape: tuple[int, int]) -> None:
+        if not isinstance(value, np.ndarray) or value.shape != shape:
+            raise ValueError(f"{name} must return a 2D array with shape {shape}.")
+        if value.dtype.kind not in "biuf":
+            raise ValueError(f"{name} must return a real numeric array.")
+
+    @staticmethod
+    def _valid_background(background: onp.Array2D[np.float64]) -> bool:
+        with np.errstate(over="ignore", invalid="ignore"):
+            total = np.sum(background)
+        return bool(np.all(np.isfinite(background)) and np.all(background >= 0) and np.isfinite(total) and total > 0)
+
+    @staticmethod
+    def _validate_array_inputs(
+        initial_density: onp.Array2D[np.float64],
+        initial_background: onp.Array2D[np.float64],
+        z_mesh: onp.Array2D[np.float64],
+        vz_mesh: onp.Array2D[np.float64],
+    ) -> None:
+        # Validate dimensionality of arrays
+        if initial_density.size == 0:
+            raise ValueError("Input maps must be nonempty.")
+        for name, ndim in (
+            ("initial_density", initial_density.ndim),
+            ("initial_background", initial_background.ndim),
+            ("z_mesh", z_mesh.ndim),
+            ("vz_mesh", vz_mesh.ndim),
+        ):
+            if ndim != 2:
+                msg = f"`{name}` must be a 2D array."
+                raise ValueError(msg)
+        # Validate that arrays are the same shape
+        common_shape: tuple[int, int] = initial_density.shape
+        for name, shape in (
+            ("initial_density", initial_density.shape),
+            ("initial_background", initial_background.shape),
+            ("z_mesh", z_mesh.shape),
+            ("vz_mesh", vz_mesh.shape),
+        ):
+            if shape != common_shape:
+                msg = f"`{name}` was expected to have shape {common_shape} but was {shape}."
+                raise ValueError(msg)
+        # Validate coordinates are purely finite
+        for name, arr in (
+            ("z_mesh", z_mesh),
+            ("vz_mesh", vz_mesh),
+        ):
+            if np.any(~np.isfinite(arr)):
+                msg = f"{name} has non-finite coordinates which is not allowed."
+                raise ValueError(msg)
+        # Validate counts and background are purely finite and non-negative
+        for name, arr in (
+            ("initial_density", initial_density),
+            ("initial_background", initial_background),
+        ):
+            if np.any(~np.isfinite(arr)):
+                msg = f"{name} has non-finite counts which is not allowed."
+                raise ValueError(msg)
+            if np.any(arr < 0.0):
+                msg = f"{name} has negative counts which is not allowed."
+                raise ValueError(msg)
 
     def _optimize_parameters(
         self,
@@ -914,8 +1049,9 @@ class PSpiralFitter:
             current_model, current_lnl = accepted
             current_perturbation = current_model.signal()
             new_background = self._smoothing_func(initial_density / current_perturbation)
+            self._validate_callback_shape("smoothing_func", new_background, initial_density.shape)
 
-            if np.any(~np.isfinite(new_background)):
+            if not self._valid_background(new_background):
                 yield FitSuccess(
                     result=PSpiralFitResult(
                         initial_model=initial_model,

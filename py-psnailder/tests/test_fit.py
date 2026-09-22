@@ -229,6 +229,100 @@ def test_refinement_tolerance(atol: float, rtol: float, converges: bool, proposa
     assert events[0].diagnostics.nfev == 10
 
 
+@pytest.mark.parametrize("kind", ["shape", "nan", "negative", "zero", "inf"])
+def test_invalid_mask_rejected_before_optimizer(kind: str) -> None:
+    grid = np.ones((2, 2))
+    mask = (
+        np.ones((1, 2))
+        if kind == "shape"
+        else np.full_like(grid, {"nan": np.nan, "negative": -1.0, "zero": 0.0, "inf": np.inf}.get(kind, 1.0))
+    )
+    fitter = PSpiralFitter(mask_func=lambda z, vz: mask)
+    with patch.object(fitter, "_optimize_parameters") as optimizer:
+        with pytest.raises(ValueError, match="mask_func"):
+            list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid))
+    optimizer.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["shape", "nan", "negative", "zero", "inf", "overflow"])
+def test_invalid_smoother_output(kind: str) -> None:
+    grid = np.ones((2, 2))
+    proposal = (
+        np.ones((1, 2))
+        if kind == "shape"
+        else np.full_like(
+            grid,
+            {"nan": np.nan, "negative": -1.0, "zero": 0.0, "inf": np.inf, "overflow": np.finfo(float).max}.get(kind, 1.0),
+        )
+    )
+    fitter = PSpiralFitter(smoothing_func=lambda arr: proposal)
+    parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
+    with patch.object(
+        fitter, "_optimize_parameters", return_value=_OptimizationResult(parameters, 0.0, True, 10, 2, "ok")
+    ) as optimizer:
+        stream = fitter.fit_spiral_with_background_gen(grid, grid, grid, grid, num_components=1, winding=1)
+        initial = next(stream)
+        assert isinstance(initial, FitProgress)
+        if kind == "shape":
+            with pytest.raises(ValueError, match="smoothing_func"):
+                list(stream)
+        else:
+            (outcome,) = list(stream)
+            assert isinstance(outcome, FitSuccess)
+            assert outcome.result.reason is FitTerminationReason.INVALID_BACKGROUND_UPDATE
+            assert outcome.result.final_model is initial.model
+            assert outcome.result.num_iterations == 1
+            assert outcome.diagnostics.nfev == 10
+    optimizer.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["empty", "single", "outside", "singular"])
+def test_unusable_samples_return_failure(kind: str) -> None:
+    samples = {"empty": [], "single": [0.0], "outside": [10.0, 11.0], "singular": [0.0, 0.0]}[kind]
+    z = np.array(samples)
+    bins = np.array([-1.0, 0.0, 1.0])
+    with patch("psnailder.fit.optimize.differential_evolution") as optimizer:
+        outcome = PSpiralFitter().fit_spiral(z, z, bins, bins)
+    assert isinstance(outcome, FitFailure)
+    assert outcome.diagnostics.nfev == 0
+    optimizer.assert_not_called()
+
+
+@pytest.mark.parametrize("which", range(4))
+@pytest.mark.parametrize("kind", ["shape", "nonfinite"])
+def test_invalid_input_maps(which: int, kind: str) -> None:
+    arrays = [np.ones((2, 2)) for _ in range(4)]
+    arrays[which] = np.ones((1, 2)) if kind == "shape" else np.full((2, 2), np.nan)
+    with patch("psnailder.fit.optimize.differential_evolution") as optimizer:
+        with pytest.raises(ValueError):
+            PSpiralFitter().fit_spiral_with_background(*arrays)
+    optimizer.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["max_iterations", "num_components", "winding"])
+@pytest.mark.parametrize("value", [True, 1.5, np.nan, np.inf])
+def test_invalid_integer_configuration(field: str, value: float | bool) -> None:
+    grid = np.ones((2, 2))
+    with patch("psnailder.fit.generate_initial_background") as kde:
+        with pytest.raises(ValueError, match=field):
+            if field == "max_iterations":
+                PSpiralFitter(max_iterations=value)  # pyright: ignore[reportArgumentType]
+            elif field == "num_components":
+                PSpiralFitter().fit_spiral(grid[0], grid[0], np.arange(3.0), np.arange(3.0), num_components=value)  # pyright: ignore[reportArgumentType]
+            else:
+                PSpiralFitter().fit_spiral(grid[0], grid[0], np.arange(3.0), np.arange(3.0), winding=value)  # pyright: ignore[reportArgumentType]
+    kde.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_nonfinite_samples_rejected_before_kde(value: float) -> None:
+    bins = np.arange(3.0)
+    with patch("psnailder.fit.generate_initial_background") as kde:
+        with pytest.raises(ValueError, match="finite"):
+            PSpiralFitter().fit_spiral(np.array([0.0, value]), np.zeros(2), bins, bins)
+    kde.assert_not_called()
+
+
 @pytest.mark.parametrize("seed", range(3))
 def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     """ "Test that Gaussian distributed vertical phase space distributions have low improvement.

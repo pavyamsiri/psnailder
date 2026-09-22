@@ -93,6 +93,19 @@ necessarily converged. Inspect `result.reason`: `fixed_background`,
 is retained. Invalid configuration may still raise exceptions; the outcome API
 does not catch every possible input or numerical-library error.
 
+Malformed input shapes, nonfinite coordinates, negative/nonfinite count cells,
+and invalid fitting options raise `ValueError`. Empty/insufficient samples,
+no counts inside the fitting region, singular KDE estimation, and zero-total
+count/background maps instead return `FitFailure` without running optimization.
+Input maps must be nonempty and have identical 2D shapes.
+
+Custom masks must return same-shaped real numeric arrays of finite, nonnegative
+weights, with at least one positive weight. Smoothers must also return same-shaped
+real numeric arrays. Invalid callback shapes/types raise `ValueError`; a smoother
+returning negative/nonfinite values or a nonpositive/nonfinite total stops with
+`invalid_background_update`, retaining the last accepted fit. Unrelated callback
+exceptions are not caught.
+
 `warm_start` is a full, flat parameter vector, ordered
 `[alpha, b, c, theta0, scale_factor, rho]` for each component. It requires an
 explicit `num_components`. Fixed coordinates are replaced by their configured
