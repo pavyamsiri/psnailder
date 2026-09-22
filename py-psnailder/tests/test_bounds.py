@@ -1,16 +1,16 @@
 """Named bounds, reduced vectors, and component selection."""
 
-from unittest.mock import patch
 from typing import Literal
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
-from psnailder.fit import Fixed, Interval, ParameterBounds, PSpiralFitter, FitSuccess
-from psnailder.param_layout import ParameterLayout as _ParameterLayout
 from psnailder._likelihood_utils import ln_likelihood
+from psnailder.fit import FitSuccess, Fixed, Interval, ParameterBounds, PSpiralFitter
 from psnailder.model import PSpiralModel
+from psnailder.param_layout import ParameterLayout as _ParameterLayout
 
 
 def arm(alpha: Interval | Fixed = Fixed(0.0), theta: float = 0.0) -> ParameterBounds:
@@ -119,9 +119,8 @@ def test_reduced_guess_and_expanded_result() -> None:
 @pytest.mark.parametrize("count", [None, 2, 0])
 def test_insufficient_bounds_fail_before_optimization(count: int | None) -> None:
     grid = np.ones((2, 2))
-    with patch("psnailder.fit.optimize.differential_evolution") as de:
-        with pytest.raises(ValueError, match="bounds"):
-            PSpiralFitter(bounds=[arm()]).fit_spiral_with_background(grid, grid, grid, grid, num_components=count)
+    with patch("psnailder.fit.optimize.differential_evolution") as de, pytest.raises(ValueError, match="bounds"):
+        PSpiralFitter(bounds=[arm()]).fit_spiral_with_background(grid, grid, grid, grid, num_components=count)
     de.assert_not_called()
 
 

@@ -1,15 +1,18 @@
 """A module to study the reliability of global minimization."""
 
 from __future__ import annotations
+
 import time
+
 import numpy as np
 from phasmix.component import AlinderComponent, GaussianComponent
 from phasmix.mock import MockModel
+
+from psnailder._background_utils import generate_initial_background
 from psnailder._internal import PSpiralFitter as PSpiralFitterRust
+from psnailder._likelihood_utils import ln_likelihood
 from psnailder.fit import PSpiralFitter as PSpiralFitterPython
 from psnailder.fit import create_sigmoid_mask
-from psnailder._background_utils import generate_initial_background
-from psnailder._likelihood_utils import ln_likelihood
 
 
 def run_study():

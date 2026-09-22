@@ -1,11 +1,12 @@
 """Module containing the data representation of a phase spiral arm component."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, override
 
-from scipy import special
 import numpy as np
+from scipy import special
 
 from ._shape_utils import verify_array_shape
 

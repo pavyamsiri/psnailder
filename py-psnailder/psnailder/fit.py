@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, Literal
@@ -18,7 +17,7 @@ from .model import PSpiralModel
 from .param_layout import ParameterLayout
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Sequence
 
     from optype import numpy as onp
 
@@ -30,19 +29,19 @@ type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], on
 log: Final[logging.Logger] = logging.getLogger(__name__)
 
 __all__: Final[list[str]] = [
-    "Interval",
-    "Fixed",
-    "ParameterBounds",
     "FitEvent",
+    "FitFailure",
+    "FitFailureReason",
     "FitOutcome",
     "FitProgress",
     "FitSuccess",
-    "FitFailure",
-    "FitFailureReason",
     "FitTerminationReason",
+    "Fixed",
+    "Interval",
     "OptimizationDiagnostics",
     "PSpiralFitResult",
     "PSpiralFitter",
+    "ParameterBounds",
     "create_gaussian_smoother",
     "create_sigmoid_mask",
 ]
@@ -355,7 +354,7 @@ class PSpiralFitter:
 
         """
         if max_iterations is not None and (
-            isinstance(max_iterations, bool) or not isinstance(max_iterations, (int, np.integer)) or max_iterations < 0
+            isinstance(max_iterations, bool) or not isinstance(max_iterations, (int, np.integer)) or max_iterations < 0  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
             msg = "max_iterations must be a nonnegative integer or None."
             raise ValueError(msg)
@@ -377,11 +376,13 @@ class PSpiralFitter:
 
     def _component_bounds(self, num_components: int) -> Sequence[ParameterBounds]:
         if num_components < 1:
-            raise ValueError("Component bounds require a positive component count.")
+            msg = "Component bounds require a positive component count."
+            raise ValueError(msg)
         if isinstance(self._bounds, ParameterBounds):
             return (self._bounds,) * num_components
         if num_components > len(self._bounds):
-            raise ValueError("Not enough bounds for the requested component count.")
+            msg = "Not enough bounds for the requested component count."
+            raise ValueError(msg)
         return self._bounds[:num_components]
 
     def fit_spiral(
@@ -500,7 +501,8 @@ class PSpiralFitter:
                 raise ValueError(msg)
 
         if not np.all(np.isfinite(z)) or not np.all(np.isfinite(vz)):
-            raise ValueError("z and vz samples must be finite.")
+            msg = "z and vz samples must be finite."
+            raise ValueError(msg)
         if z.size < 2:
             yield self._unusable_data("At least two samples are required for background estimation.")
             return
@@ -567,6 +569,7 @@ class PSpiralFitter:
         See Also
         --------
         fit_spiral_with_background_gen : Full parameter and event documentation.
+
         """
         val = _get_value_from_gen(
             self.fit_spiral_with_background_gen(
@@ -672,7 +675,8 @@ class PSpiralFitter:
         mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
         self._validate_callback_shape("mask_func", mask, initial_density.shape)
         if not np.all(np.isfinite(mask)) or np.any(mask < 0) or not np.any(mask > 0):
-            raise ValueError("mask_func must return finite, nonnegative weights with at least one positive weight.")
+            msg = "mask_func must return finite, nonnegative weights with at least one positive weight."
+            raise ValueError(msg)
         if not self._valid_background(initial_density) or not self._valid_background(initial_background):
             yield self._unusable_data("Counts and background must have positive finite totals.")
             return
@@ -710,7 +714,7 @@ class PSpiralFitter:
         return FitFailure(
             FitFailureReason.NO_VALID_CANDIDATE,
             message,
-            OptimizationDiagnostics("No optimization took place.", False, 0, 0),
+            OptimizationDiagnostics(message="No optimization took place.", success=False, nfev=0, nit=0),
         )
 
     def _validate_fit_options(
@@ -720,25 +724,30 @@ class PSpiralFitter:
         warm_start: onp.Array1D[np.float64] | None,
     ) -> None:
         if num_components is not None and (
-            isinstance(num_components, bool) or not isinstance(num_components, (int, np.integer)) or num_components not in (1, 2)
+            isinstance(num_components, bool) or not isinstance(num_components, (int, np.integer)) or num_components not in (1, 2)  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
-            raise ValueError("num_components must be 1 or 2, or None; check component bounds.")
+            msg = "`num_components` must be 1 or 2, or `None`; check component bounds."
+            raise ValueError(msg)
         if winding is not None and (
-            isinstance(winding, bool) or not isinstance(winding, (int, np.integer)) or winding not in (-1, 1)
+            isinstance(winding, bool) or not isinstance(winding, (int, np.integer)) or winding not in (-1, 1)  # pyright: ignore[reportUnnecessaryIsInstance]
         ):
-            raise ValueError("winding must be -1 or 1, or None.")
+            msg = "winding must be -1 or 1, or None."
+            raise ValueError(msg)
         if warm_start is not None and num_components is None:
-            raise ValueError("Can not use warm start if the number of component is not set.")
+            msg = "Can not use warm start if the number of component is not set."
+            raise ValueError(msg)
         selected_bounds = self._component_bounds(num_components if num_components is not None else 2)
         if warm_start is not None:
-            ParameterLayout.from_bounds(selected_bounds).pack(warm_start)
+            warm_start = ParameterLayout.from_bounds(selected_bounds).pack(warm_start)
 
     @staticmethod
     def _validate_callback_shape(name: str, value: object, shape: tuple[int, int]) -> None:
         if not isinstance(value, np.ndarray) or value.shape != shape:
-            raise ValueError(f"{name} must return a 2D array with shape {shape}.")
+            msg = f"{name} must return a 2D array with shape {shape}."
+            raise ValueError(msg)
         if value.dtype.kind not in "biuf":
-            raise ValueError(f"{name} must return a real numeric array.")
+            msg = f"{name} must return a real numeric array."
+            raise ValueError(msg)
 
     @staticmethod
     def _valid_background(background: onp.Array2D[np.float64]) -> bool:
@@ -755,7 +764,8 @@ class PSpiralFitter:
     ) -> None:
         # Validate dimensionality of arrays
         if initial_density.size == 0:
-            raise ValueError("Input maps must be nonempty.")
+            msg = "Input maps must be nonempty."
+            raise ValueError(msg)
         for name, ndim in (
             ("initial_density", initial_density.ndim),
             ("initial_background", initial_background.ndim),
@@ -833,7 +843,7 @@ class PSpiralFitter:
             return _OptimizationResult(
                 parameters=parameters,
                 cost=cost,
-                success=bool(np.isfinite(cost)),
+                success=bool(np.isfinite(cost)),  # pyright: ignore[reportAny]
                 nfev=1,
                 nit=0,
                 message="All parameters fixed; evaluated objective once.",
@@ -912,7 +922,7 @@ class PSpiralFitter:
                 _combine_diagnostics(res1.diagnostics, res2.diagnostics),
             )
         # 1-component fit succeeded while 2-component fit failed
-        elif isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
+        if isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
             selected = res1.result
         # 1-component fit failed while 2-component fit succeeded
         elif isinstance(res1, FitFailure) and isinstance(res2, FitSuccess):
@@ -927,8 +937,8 @@ class PSpiralFitter:
             k1 = ParameterLayout.from_bounds(self._component_bounds(1)).num_free
             k2 = ParameterLayout.from_bounds(self._component_bounds(2)).num_free
             num_particles = np.sum(density)
-            b1 = k1 * np.log(num_particles) - 2.0 * q1
-            b2 = k2 * np.log(num_particles) - 2.0 * q2
+            b1 = k1 * np.log(num_particles) - 2.0 * q1  # pyright: ignore[reportAny]
+            b2 = k2 * np.log(num_particles) - 2.0 * q2  # pyright: ignore[reportAny]
             selected = res2.result if b2 < b1 else res1.result
 
         return FitSuccess(

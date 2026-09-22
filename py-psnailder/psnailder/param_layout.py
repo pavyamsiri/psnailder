@@ -41,7 +41,6 @@ class ParameterLayout:
 
     def __post_init__(self) -> None:
         """Validate the bounds and free indices."""
-
         if any(array.ndim != 1 for array in (self.template, self.free_indices, self.lower, self.upper)):
             raise ValueError("Layout arrays must be one-dimensional.")
         if not np.issubdtype(self.free_indices.dtype, np.integer):
@@ -98,7 +97,6 @@ class ParameterLayout:
             The layout.
 
         """
-
         parameter_bounds_list: list[Interval | Fixed] = []
         for bounds in bounds_list:
             parameter_bounds_list.append(bounds.alpha)
@@ -162,7 +160,6 @@ class ParameterLayout:
         simply just discarded.
 
         """
-
         if full_parameters.shape != self.template.shape:
             msg = f"Expected the number of full parameters to be {len(self.template)}."
             raise ValueError(msg)
@@ -188,7 +185,6 @@ class ParameterLayout:
             An expanded array of the full parameters.
 
         """
-
         num_free_parameters = self.num_free
         if free_parameters.shape != (num_free_parameters,):
             msg = f"Expected the number of free parameters to be {num_free_parameters}"

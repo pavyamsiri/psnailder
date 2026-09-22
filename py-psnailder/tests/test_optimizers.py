@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from phasmix.component import AlinderComponent
 
 # Add benchmarks to path to import OPTIMIZER_REGISTRY and helpers
@@ -46,7 +47,7 @@ def test_optimizer_recovery(opt_name: str, alpha: float, b: float, c: float, the
     ub = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
 
     optimizer: Optimizer = OPTIMIZER_REGISTRY[opt_name](objective)
-    
+
     # Use a random guess within bounds
     rng = np.random.default_rng(42)
     guess = rng.uniform(lb, ub)
@@ -56,9 +57,9 @@ def test_optimizer_recovery(opt_name: str, alpha: float, b: float, c: float, the
     # We use the same relaxed tolerances as in the tiktak test
     # since these are common for likelihood-based recovery in this problem.
     np.testing.assert_allclose(
-        estimated, 
-        true_params, 
-        rtol=2e-2, 
-        atol=1e-2, 
+        estimated,
+        true_params,
+        rtol=2e-2,
+        atol=1e-2,
         err_msg=f"Optimizer '{opt_name}' failed to recover parameters.\nTruth: {true_params}\nEstimated: {estimated}\nLL: {ll}\nNFEV: {nfev}"
     )

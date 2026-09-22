@@ -238,9 +238,8 @@ def test_invalid_mask_rejected_before_optimizer(kind: str) -> None:
         else np.full_like(grid, {"nan": np.nan, "negative": -1.0, "zero": 0.0, "inf": np.inf}.get(kind, 1.0))
     )
     fitter = PSpiralFitter(mask_func=lambda z, vz: mask)
-    with patch.object(fitter, "_optimize_parameters") as optimizer:
-        with pytest.raises(ValueError, match="mask_func"):
-            list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid))
+    with patch.object(fitter, "_optimize_parameters") as optimizer, pytest.raises(ValueError, match="mask_func"):
+        list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid))
     optimizer.assert_not_called()
 
 
@@ -293,9 +292,8 @@ def test_unusable_samples_return_failure(kind: str) -> None:
 def test_invalid_input_maps(which: int, kind: str) -> None:
     arrays = [np.ones((2, 2)) for _ in range(4)]
     arrays[which] = np.ones((1, 2)) if kind == "shape" else np.full((2, 2), np.nan)
-    with patch("psnailder.fit.optimize.differential_evolution") as optimizer:
-        with pytest.raises(ValueError):
-            PSpiralFitter().fit_spiral_with_background(*arrays)
+    with patch("psnailder.fit.optimize.differential_evolution") as optimizer, pytest.raises(ValueError):
+        PSpiralFitter().fit_spiral_with_background(*arrays)
     optimizer.assert_not_called()
 
 
@@ -317,9 +315,8 @@ def test_invalid_integer_configuration(field: str, value: float | bool) -> None:
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
 def test_nonfinite_samples_rejected_before_kde(value: float) -> None:
     bins = np.arange(3.0)
-    with patch("psnailder.fit.generate_initial_background") as kde:
-        with pytest.raises(ValueError, match="finite"):
-            PSpiralFitter().fit_spiral(np.array([0.0, value]), np.zeros(2), bins, bins)
+    with patch("psnailder.fit.generate_initial_background") as kde, pytest.raises(ValueError, match="finite"):
+        PSpiralFitter().fit_spiral(np.array([0.0, value]), np.zeros(2), bins, bins)
     kde.assert_not_called()
 
 
@@ -632,14 +629,13 @@ def test_sample_background_accounts_for_bin_area(uniform: bool) -> None:
 def test_invalid_bin_edges_rejected_before_kde(edges: list[float], axis: str) -> None:
     invalid = np.array(edges)
     valid = np.array([0.0, 1.0])
-    with patch("psnailder.fit.generate_initial_background") as kde:
-        with pytest.raises(ValueError, match="bin edges"):
-            PSpiralFitter().fit_spiral(
-                np.array([0.5]),
-                np.array([0.5]),
-                invalid if axis == "z" else valid,
-                invalid if axis == "vz" else valid,
-            )
+    with patch("psnailder.fit.generate_initial_background") as kde, pytest.raises(ValueError, match="bin edges"):
+        PSpiralFitter().fit_spiral(
+            np.array([0.5]),
+            np.array([0.5]),
+            invalid if axis == "z" else valid,
+            invalid if axis == "vz" else valid,
+        )
     kde.assert_not_called()
 
 

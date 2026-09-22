@@ -15,7 +15,7 @@ from phasmix.mock import MockModel
 from rich.table import Table
 from scipy import optimize, stats
 
-from psnailder import fit, model, _internal
+from psnailder import _internal, fit, model
 from psnailder._likelihood_utils import ln_likelihood
 
 if TYPE_CHECKING:
@@ -281,7 +281,7 @@ class TikTakOpt(Optimizer):
 
         best_point = top_points[0]
         best_value = top_values[0]
-        for i, (candidate, value) in enumerate(zip(top_points, top_values)):
+        for i, (candidate, value) in enumerate(zip(top_points, top_values, strict=False)):
             best_point = candidate
             best_value = value
             w = TikTakOpt._tiktak_weight(i + 1, n_star)
@@ -395,20 +395,19 @@ def _create_objective(signal_comp: AlinderComponent, *, use_rust: bool = False) 
             return -rust_model.evaluate_likelihood(density_flat, background_flat, mask_flat, z_flat, vz_flat)
 
         return _objective_rust, data_ctx
-    else:
 
-        def _objective(parameters: onp.Array1D[np.float64]) -> float:
-            nonlocal x_mesh, y_mesh, background
-            prediction = model.PSpiralModel(parameters.reshape((1, 6)), x_mesh, y_mesh, background, winding=1).prediction()
+    def _objective(parameters: onp.Array1D[np.float64]) -> float:
+        nonlocal x_mesh, y_mesh, background
+        prediction = model.PSpiralModel(parameters.reshape((1, 6)), x_mesh, y_mesh, background, winding=1).prediction()
 
-            val = -ln_likelihood(
-                density,
-                prediction,
-                mask,
-            )
-            return val
+        val = -ln_likelihood(
+            density,
+            prediction,
+            mask,
+        )
+        return val
 
-        return _objective, data_ctx
+    return _objective, data_ctx
 
 
 def _check_accuracy(
@@ -441,7 +440,7 @@ def _check_accuracy(
         t0 = time.perf_counter()
         estimated, ll, nfev = optimizer.minimize(bad_guess, lb, ub)
         total_time += time.perf_counter() - t0
-        successes += all(np.isclose(t, e, rtol=1e-3, atol=5e-4) for t, e in zip(truth, estimated))
+        successes += all(np.isclose(t, e, rtol=1e-3, atol=5e-4) for t, e in zip(truth, estimated, strict=False))
         best_ll = min(best_ll, ll)
         total_nfev += nfev
 
@@ -528,7 +527,7 @@ def _check_accuracy(
 
 
 def _is_success(truth: onp.Array1D[np.float64], estimated: onp.Array1D[np.float64]) -> bool:
-    return all(np.isclose(t, e, rtol=1e-3, atol=5e-4) for t, e in zip(truth, estimated))
+    return all(np.isclose(t, e, rtol=1e-3, atol=5e-4) for t, e in zip(truth, estimated, strict=False))
 
 
 def _print_rankings(reports: Sequence[BenchmarkReport]) -> None:

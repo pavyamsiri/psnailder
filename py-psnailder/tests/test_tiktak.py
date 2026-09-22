@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from phasmix.component import AlinderComponent
 
 # Add benchmarks to path to import TikTakOpt and helpers

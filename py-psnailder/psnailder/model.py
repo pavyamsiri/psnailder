@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from scipy import special
 
-from .component import PSpiralComponent
 from ._likelihood_utils import lrt_pvalue
+from .component import PSpiralComponent
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

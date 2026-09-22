@@ -158,7 +158,6 @@ class ParameterBounds:
             The bounds on the flattening function distance rho.
 
         """
-
         self._alpha: Interval | Fixed = ParameterBounds._parse_bounds(alpha)
         self._b: Interval | Fixed = ParameterBounds._parse_bounds(b)
         self._c: Interval | Fixed = ParameterBounds._parse_bounds(c)

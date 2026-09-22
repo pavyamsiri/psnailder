@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 from psnailder import fit
 from psnailder._likelihood_utils import ln_likelihood
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
     from optype import numpy as onp
 
 type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], onp.ToFloat]
@@ -20,14 +22,14 @@ type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], on
 def _main() -> None:
     import time
 
-    from matplotlib import pyplot as plt
     import numpy as np
+    from matplotlib import pyplot as plt
     from phasmix.component import AlinderComponent, GaussianComponent
     from phasmix.mock import MockModel
 
+    from psnailder._background_utils import generate_initial_background
     from psnailder._internal import PSpiralFitter as PSpiralFitterRust
     from psnailder.fit import PSpiralFitter as PSpiralFitterPython
-    from psnailder._background_utils import generate_initial_background
 
     signal1 = AlinderComponent(
         alpha=0.5,

@@ -7,9 +7,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import rich
-from phasmix.component import AlinderComponent
-from rich.table import Table
-
 from benchmark_optimize import (
     ScipyBasinHoppingOpt,
     ScipyDEOpt,
@@ -17,6 +14,8 @@ from benchmark_optimize import (
     TikTakOpt,
     _create_objective,
 )
+from phasmix.component import AlinderComponent
+from rich.table import Table
 
 if TYPE_CHECKING:
     from benchmark_optimize import Optimizer
@@ -40,11 +39,11 @@ def run_trials(
         # but keep it reproducible with seed if needed. Actually we want it to be robust.
         # Let's keep the target parameters fixed but randomize the starting guess.
         guess = rng.uniform(lb, ub)
-        
-        # We need a fresh objective for each trial if we were randomizing truth, 
+
+        # We need a fresh objective for each trial if we were randomizing truth,
         # but for tuning speed vs robustness we can use a fixed truth.
         signal_comp = AlinderComponent(
-            alpha=truth[0], b=truth[1], c=truth[2], 
+            alpha=truth[0], b=truth[1], c=truth[2],
             theta0=truth[3], scale_factor=truth[4], rho=truth[5],
             winding=1
         )
@@ -54,8 +53,8 @@ def run_trials(
         t0 = time.perf_counter()
         estimated, _, _ = opt.minimize(guess, lb, ub)
         total_time += time.perf_counter() - t0
-        
-        is_success = all(np.isclose(t, e, rtol=2e-2, atol=1e-2) for t, e in zip(truth, estimated))
+
+        is_success = all(np.isclose(t, e, rtol=2e-2, atol=1e-2) for t, e in zip(truth, estimated, strict=False))
         successes += 1 if is_success else 0
 
     return successes / num_trials, total_time / num_trials
@@ -63,18 +62,18 @@ def run_trials(
 
 def main():
     rich.print("[bold blue]Tuning Optimizers for Reliability and Speed (Multi-Target)[/bold blue]")
-    
+
     # Multiple target scenarios to ensure robustness
     targets = [
         np.array([0.5, 0.05, 0.002, 0.0, 40.0, 0.09]),      # Central
         np.array([0.2, 0.02, 0.001, 1.5, 35.0, 0.05]),     # Small/Low
         np.array([0.8, 0.08, 0.003, -1.5, 65.0, 0.15]),    # Large/High
     ]
-    
+
     lb = np.array([0.0, 0.005, 0.0, -np.pi, 30.0, 0.0])
     ub = np.array([1.0, 0.1, 0.004, +np.pi, 70.0, 0.18])
-    
-    num_trials_per_target = 5 
+
+    num_trials_per_target = 5
 
     results = []
 
@@ -129,12 +128,12 @@ def main():
     table.add_column("Params")
     table.add_column("Success Rate")
     table.add_column("Mean Time (s)")
-    
+
     # Filter for 100% success and sort by time
     viable = [r for r in results if r[2] == 1.0]
     for r in sorted(viable, key=lambda x: x[3]):
         table.add_row(r[0], r[1], f"[green]{r[2]:.0%}[/green]", f"{r[3]:.3f}")
-    
+
     rich.print("\n")
     rich.print(table)
 
