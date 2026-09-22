@@ -21,6 +21,7 @@ from ._backends import (
     FitBackend,
     FitFailure,
     FitFailureReason,
+    FitProgress,
     FitRequest,
     FitSuccess,
     FitTerminationReason,
@@ -204,6 +205,7 @@ class RustFitBackend(FitBackend):
 
     @override
     def fit_events(self, request: FitRequest) -> Iterator[BackendEvent]:
+        """Yield each accepted Rust refinement checkpoint and the terminal result."""
         unsupported = self._unsupported_reason(request)
         if unsupported is not None:
             yield self._failure(unsupported)
@@ -216,7 +218,7 @@ class RustFitBackend(FitBackend):
         initial_density = request.initial_density
         shape = initial_density.shape
 
-        res = self._rust_fitter.fit_spiral_with_background(
+        checkpoints = self._rust_fitter.fit_spiral_with_background_events(
             initial_density.flatten(),
             initial_background.flatten(),
             mask.flatten(),
@@ -224,7 +226,18 @@ class RustFitBackend(FitBackend):
             vz_mesh.flatten(),
             shape=shape,
         )
-        yield FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics(res))
+        for checkpoint in checkpoints:
+            result = RustFitBackend._convert_result(checkpoint, request)
+            diagnostics = RustFitBackend._rust_diagnostics(checkpoint)
+            if checkpoint.terminal:
+                yield FitSuccess(result=result, diagnostics=diagnostics)
+            else:
+                yield FitProgress(
+                    model=result.final_model,
+                    iteration=result.num_iterations,
+                    lnl=result.lnl,
+                    diagnostics=diagnostics,
+                )
 
     def _unsupported_reason(self, request: FitRequest) -> str | None:
         checks = (

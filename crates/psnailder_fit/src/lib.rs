@@ -779,14 +779,16 @@ pub struct PSpiralFitResult {
     pub nfev: u64,
     /// Number of background refinement attempts performed.
     pub nit: u64,
+    /// Whether this checkpoint is terminal.
+    pub terminal: bool,
 }
 
 /// An iterator that performs the fitting process step-by-step.
 ///
 /// This allows for inspecting intermediate results or customizing the refinement loop.
-pub struct PSpiralFitterIterative<'fit> {
+pub struct PSpiralFitterIterative {
     /// The composite one and two arm spiral fitter.
-    pub fitter: &'fit PSpiralFitter,
+    pub fitter: PSpiralFitter,
     /// The initial density grid.
     pub initial_density: Arc<[f64]>,
     /// The initial estimated background grid.
@@ -835,7 +837,141 @@ pub struct PSpiralFitterIterative<'fit> {
     pub total_nfev: u64,
 }
 
-impl Iterator for PSpiralFitterIterative<'_> {
+impl PSpiralFitterIterative {
+    /// Optimize the current background and preserve the selected winding.
+    fn optimize_model(&mut self) -> (PSpiralModel, f64, u64) {
+        match self.num_components {
+            1 => {
+                let (component, quality, nfev) = if let Some(winding) = self.best_winding {
+                    self.fitter
+                        .fitter_single
+                        .fit_spiral_with_background_with_winding(
+                            &self.initial_density,
+                            &self.current_background,
+                            &self.mask,
+                            &self.mesh_x,
+                            &self.mesh_y,
+                            winding,
+                        )
+                } else {
+                    let result = self.fitter.fitter_single.fit_spiral_with_background(
+                        &self.initial_density,
+                        &self.current_background,
+                        &self.mask,
+                        &self.mesh_x,
+                        &self.mesh_y,
+                    );
+                    self.best_winding = Some(result.0.winding);
+                    result
+                };
+                (
+                    PSpiralModel {
+                        components: vec![component],
+                    },
+                    quality,
+                    nfev,
+                )
+            }
+            2 => {
+                let (first, second, quality, nfev) = if let Some(winding) = self.best_winding {
+                    self.fitter
+                        .fitter_double
+                        .fit_spiral_with_background_with_winding(
+                            &self.initial_density,
+                            &self.current_background,
+                            &self.mask,
+                            &self.mesh_x,
+                            &self.mesh_y,
+                            winding,
+                        )
+                } else {
+                    let result = self.fitter.fitter_double.fit_spiral_with_background(
+                        &self.initial_density,
+                        &self.current_background,
+                        &self.mask,
+                        &self.mesh_x,
+                        &self.mesh_y,
+                    );
+                    self.best_winding = Some(result.0.winding);
+                    result
+                };
+                (
+                    PSpiralModel {
+                        components: vec![first, second],
+                    },
+                    quality,
+                    nfev,
+                )
+            }
+            _ => panic!("Unsupported `num_components`"),
+        }
+    }
+
+    /// Propose a smoothed, count-normalized background for a model.
+    fn propose_background(&self, model: &PSpiralModel) -> Arc<[f64]> {
+        let mut perturbation = vec![0.0; self.initial_density.len()];
+        model.perturbation_vec(&self.mesh_x, &self.mesh_y, &mut perturbation);
+        let unsmoothed: Vec<f64> = self
+            .initial_density
+            .iter()
+            .zip(perturbation.iter())
+            .map(|(data, factor)| data / factor.max(1e-10))
+            .collect();
+        let blurred = gaussian_blur_2d(&unsmoothed, self.shape, self.sigma_z, self.sigma_vz);
+        let mut background = blurred.to_vec();
+        let predicted_total: f64 = background
+            .iter()
+            .zip(perturbation.iter())
+            .map(|(value, factor)| value * factor)
+            .sum();
+        let data_total: f64 = self.initial_density.iter().sum();
+        if predicted_total.is_finite() && predicted_total > 0.0 {
+            let scale = data_total / predicted_total;
+            for value in &mut background {
+                *value *= scale;
+            }
+        }
+        Arc::from(background)
+    }
+
+    /// Evaluate the likelihood of a model with a proposed background.
+    fn background_quality(&self, model: &PSpiralModel, background: &[f64]) -> f64 {
+        let mut prediction = vec![0.0; background.len()];
+        model.perturbation_vec(&self.mesh_x, &self.mesh_y, &mut prediction);
+        prediction
+            .iter_mut()
+            .zip(background.iter())
+            .for_each(|(value, background)| *value *= background);
+        ln_likelihood(&self.initial_density, &prediction, &self.mask)
+    }
+
+    /// Materialize the currently accepted state as an immutable fit result.
+    fn snapshot(&self) -> PSpiralFitResult {
+        PSpiralFitResult {
+            data: Arc::clone(&self.initial_density),
+            initial_model: self
+                .initial_model
+                .clone()
+                .expect("initial model is set before snapshot"),
+            initial_background: Arc::clone(&self.initial_background),
+            final_model: self
+                .best_model
+                .clone()
+                .expect("best model is set before snapshot"),
+            final_background: Arc::clone(&self.current_background),
+            num_iterations: self.iteration_index,
+            max_iterations: self.max_iterations,
+            converged: self.converged,
+            initial_lnl: self.initial_quality,
+            final_lnl: self.best_quality,
+            nfev: self.total_nfev,
+            nit: self.iteration_index as u64,
+            terminal: self.is_finished,
+        }
+    }
+}
+
+impl Iterator for PSpiralFitterIterative {
     type Item = PSpiralFitResult;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -855,78 +991,7 @@ impl Iterator for PSpiralFitterIterative<'_> {
         // Update the iteration index.
         self.iteration_index += 1;
 
-        // Optimize parameters.
-        let (current_model, ll, nfev) = match self.num_components {
-            1 => {
-                // Use the winding from a previous iteration or the given one.
-                let (comp, ll, nfev) = if let Some(w) = self.best_winding {
-                    self.fitter
-                        .fitter_single
-                        .fit_spiral_with_background_with_winding(
-                            &self.initial_density,
-                            &self.current_background,
-                            &self.mask,
-                            &self.mesh_x,
-                            &self.mesh_y,
-                            w,
-                        )
-                }
-                // Determine the best winding by performing both fits.
-                else {
-                    let (comp, ll, nfev) = self.fitter.fitter_single.fit_spiral_with_background(
-                        &self.initial_density,
-                        &self.current_background,
-                        &self.mask,
-                        &self.mesh_x,
-                        &self.mesh_y,
-                    );
-                    self.best_winding = Some(comp.winding);
-                    (comp, ll, nfev)
-                };
-                (
-                    PSpiralModel {
-                        components: vec![comp],
-                    },
-                    ll,
-                    nfev,
-                )
-            }
-            2 => {
-                // Use the winding from a previous iteration or the given one.
-                let (comp1, comp2, ll, nfev) = if let Some(w) = self.best_winding {
-                    self.fitter
-                        .fitter_double
-                        .fit_spiral_with_background_with_winding(
-                            &self.initial_density,
-                            &self.current_background,
-                            &self.mask,
-                            &self.mesh_x,
-                            &self.mesh_y,
-                            w,
-                        )
-                }
-                // Determine the best winding by performing both fits.
-                else {
-                    let (c1, c2, ll, nfev) = self.fitter.fitter_double.fit_spiral_with_background(
-                        &self.initial_density,
-                        &self.current_background,
-                        &self.mask,
-                        &self.mesh_x,
-                        &self.mesh_y,
-                    );
-                    self.best_winding = Some(c1.winding);
-                    (c1, c2, ll, nfev)
-                };
-                (
-                    PSpiralModel {
-                        components: vec![comp1, comp2],
-                    },
-                    ll,
-                    nfev,
-                )
-            }
-            _ => panic!("Unsupported `num_components`"),
-        };
+        let (current_model, ll, nfev) = self.optimize_model();
         self.total_nfev += nfev;
 
         // Set initial model if this is the first iteration.
@@ -941,70 +1006,15 @@ impl Iterator for PSpiralFitterIterative<'_> {
             self.best_model = Some(current_model);
             self.converged = true;
             self.is_finished = true;
-            return Some(PSpiralFitResult {
-                data: Arc::clone(&self.initial_density),
-                initial_model: self.initial_model.clone().unwrap(),
-                initial_background: Arc::clone(&self.initial_background),
-                final_model: self.best_model.clone().unwrap(),
-                final_background: Arc::clone(&self.current_background),
-                num_iterations: self.iteration_index,
-                max_iterations: self.max_iterations,
-                converged: self.converged,
-                initial_lnl: self.initial_quality,
-                final_lnl: self.best_quality,
-                nfev: self.total_nfev,
-                nit: self.iteration_index as u64,
-            });
+            return Some(self.snapshot());
         }
 
-        // Update background by the relation
-        // ``new_background = smooth(data / pertubation)``
-
-        // Calculate the perturbation
-        let mut current_perturbation = vec![0.0; self.initial_density.len()];
-        current_model.perturbation_vec(&self.mesh_x, &self.mesh_y, &mut current_perturbation);
-
-        // Unsmoothed background
-        let next_background: Vec<f64> = self
-            .initial_density
-            .iter()
-            .zip(current_perturbation.iter())
-            .map(|(current_data, current_pert)| current_data / current_pert.max(1e-10))
-            .collect();
-
-        // Smoothed background
-        let blurred_background =
-            gaussian_blur_2d(&next_background, self.shape, self.sigma_z, self.sigma_vz);
-        let mut blurred_background_vec = blurred_background.to_vec();
-
-        // Normalize the predicted counts, not the background alone. The
-        // background is multiplied by the current perturbation before it is
-        // compared with the observed density, so the relevant total is
-        // `sum(background * perturbation)`.
-        let predicted_count_sum: f64 = blurred_background_vec
-            .iter()
-            .zip(current_perturbation.iter())
-            .map(|(background, perturbation)| background * perturbation)
-            .sum();
-        let density_sum: f64 = self.initial_density.iter().sum();
-        if predicted_count_sum.is_finite() && predicted_count_sum > 0.0 {
-            let scale = density_sum / predicted_count_sum;
-            for current_background in blurred_background_vec.iter_mut() {
-                *current_background *= scale;
-            }
-        }
-        let next_background_arc: Arc<[f64]> = Arc::from(blurred_background_vec);
-
-        // Check quality
-        let mut new_data = vec![0.0; self.initial_density.len()];
-        for i in 0..new_data.len() {
-            new_data[i] = current_perturbation[i] * next_background_arc[i];
-        }
-        let quality = ln_likelihood(&self.initial_density, &new_data, &self.mask);
+        let next_background = self.propose_background(&current_model);
+        let quality = self.background_quality(&current_model, &next_background);
 
         // The new background provides a worse fit so we are done with refinement.
         let improvement = quality - self.best_quality;
-        let tolerance = self.atol + self.rtol * self.best_quality.abs();
+        let tolerance = self.rtol.mul_add(self.best_quality.abs(), self.atol);
         if improvement <= tolerance {
             // We only converge if the best fitting model (and hence background) was not the initial fit.
             self.converged = self.best_model.is_some();
@@ -1012,41 +1022,15 @@ impl Iterator for PSpiralFitterIterative<'_> {
                 self.best_model = self.initial_model.clone();
             }
             self.is_finished = true;
-            return Some(PSpiralFitResult {
-                data: Arc::clone(&self.initial_density),
-                initial_model: self.initial_model.clone().unwrap(),
-                initial_background: Arc::clone(&self.initial_background),
-                final_model: self.best_model.clone().unwrap(),
-                final_background: Arc::clone(&self.current_background),
-                num_iterations: self.iteration_index,
-                max_iterations: self.max_iterations,
-                converged: self.converged,
-                initial_lnl: self.initial_quality,
-                final_lnl: self.best_quality,
-                nfev: self.total_nfev,
-                nit: self.iteration_index as u64,
-            });
+            return Some(self.snapshot());
         }
 
         // Update the quality, background and model.
         self.best_quality = quality;
-        self.current_background = next_background_arc;
-        self.best_model = Some(current_model.clone());
+        self.current_background = next_background;
+        self.best_model = Some(current_model);
 
-        Some(PSpiralFitResult {
-            data: Arc::clone(&self.initial_density),
-            initial_model: self.initial_model.clone().unwrap(),
-            initial_background: Arc::clone(&self.initial_background),
-            final_model: current_model,
-            final_background: Arc::clone(&self.current_background),
-            num_iterations: self.iteration_index,
-            max_iterations: self.max_iterations,
-            converged: self.converged,
-            initial_lnl: self.initial_quality,
-            final_lnl: self.best_quality,
-            nfev: self.total_nfev,
-            nit: self.iteration_index as u64,
-        })
+        Some(self.snapshot())
     }
 }
 
@@ -1064,8 +1048,8 @@ impl PSpiralFitter {
     /// * `winding` - Optional fixed winding direction (1 for CW, -1 for CCW).
     /// * `improve_background` - Whether to perform iterative background refinement.
     #[must_use]
-    pub fn fit_spiral_with_background_iterative<'fit>(
-        &'fit self,
+    pub fn fit_spiral_with_background_iterative(
+        &self,
         initial_density: &[f64],
         initial_background: &[f64],
         mask: &[f64],
@@ -1075,7 +1059,7 @@ impl PSpiralFitter {
         num_components: Option<usize>,
         winding: Option<Winding>,
         improve_background: bool,
-    ) -> PSpiralFitterIterative<'fit> {
+    ) -> PSpiralFitterIterative {
         let actual_num_components = num_components.unwrap_or_else(|| {
             // AIC comparison
             let (_, ll_single, _) = self.fitter_single.fit_spiral_with_background(
@@ -1101,7 +1085,7 @@ impl PSpiralFitter {
         });
 
         PSpiralFitterIterative {
-            fitter: self,
+            fitter: self.clone(),
             initial_density: Arc::from(initial_density),
             initial_background: Arc::from(initial_background),
             current_background: Arc::from(initial_background),

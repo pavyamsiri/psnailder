@@ -162,6 +162,54 @@ pub struct PSpiralFitResult {
     pub nfev: u64,
     #[pyo3(get)]
     pub nit: u64,
+    #[pyo3(get)]
+    pub terminal: bool,
+}
+
+#[pyclass]
+pub struct PSpiralFitIterator {
+    inner: Option<psnailder_fit::PSpiralFitterIterative>,
+    mask: Vec<f64>,
+}
+
+#[pymethods]
+impl PSpiralFitIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PSpiralFitResult>> {
+        let Some(iterator) = self.inner.as_mut() else {
+            return Ok(None);
+        };
+        let Some(res) = iterator.next() else {
+            self.inner = None;
+            return Ok(None);
+        };
+        let dof = (6 * res.final_model.components.len()) as f64;
+        let dist =
+            statrs::distribution::ChiSquared::new(dof).expect("`freedom` is guaranteed positive.");
+        let data = res.data.to_vec();
+        let initial_null =
+            psnailder_core::ln_likelihood(&data, &res.initial_background, &self.mask);
+        let final_null = psnailder_core::ln_likelihood(&data, &res.final_background, &self.mask);
+        Ok(Some(PSpiralFitResult {
+            initial_model: PSpiralModel(res.initial_model),
+            final_model: PSpiralModel(res.final_model),
+            data: PyArray1::from_vec(py, data).into(),
+            initial_background: PyArray1::from_vec(py, res.initial_background.to_vec()).into(),
+            final_background: PyArray1::from_vec(py, res.final_background.to_vec()).into(),
+            num_iterations: res.num_iterations,
+            max_iterations: res.max_iterations,
+            converged: res.converged,
+            lnl: res.final_lnl,
+            initial_pvalue: dist.sf(-2.0 * (initial_null - res.initial_lnl)),
+            final_pvalue: dist.sf(-2.0 * (final_null - res.final_lnl)),
+            nfev: res.nfev,
+            nit: res.nit,
+            terminal: res.terminal,
+        }))
+    }
 }
 
 #[pymethods]
@@ -334,6 +382,43 @@ impl PSpiralFitter {
             final_pvalue,
             nfev: res.nfev,
             nit: res.nit,
+            terminal: res.terminal,
+        })
+    }
+
+    /// Run the Rust refinement iterator and return every accepted checkpoint.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "This mirrors the batch fitting API for event checkpoints."
+    )]
+    pub fn fit_spiral_with_background_events(
+        &self,
+        initial_density: PyReadonlyArray1<'_, f64>,
+        initial_background: PyReadonlyArray1<'_, f64>,
+        mask: PyReadonlyArray1<'_, f64>,
+        mesh_x: PyReadonlyArray1<'_, f64>,
+        mesh_y: PyReadonlyArray1<'_, f64>,
+        shape: (usize, usize),
+    ) -> PyResult<PSpiralFitIterator> {
+        let initial_density = initial_density.as_slice()?;
+        let initial_background = initial_background.as_slice()?;
+        let mask = mask.as_slice()?;
+        let mesh_x = mesh_x.as_slice()?;
+        let mesh_y = mesh_y.as_slice()?;
+        let results = self.inner.fit_spiral_with_background_iterative(
+            initial_density,
+            initial_background,
+            mask,
+            mesh_x,
+            mesh_y,
+            shape,
+            None,
+            None,
+            true,
+        );
+        Ok(PSpiralFitIterator {
+            inner: Some(results),
+            mask: mask.to_vec(),
         })
     }
 }
@@ -358,5 +443,6 @@ fn _internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PSpiralModel>()?;
     m.add_class::<PSpiralFitter>()?;
     m.add_class::<PSpiralFitResult>()?;
+    m.add_class::<PSpiralFitIterator>()?;
     Ok(())
 }

@@ -60,6 +60,19 @@ class PSpiralFitter:
         mesh_y: onp.Array1D[np.float64],
         shape: tuple[int, int],
     ) -> PSpiralFitResult: ...
+    def fit_spiral_with_background_events(
+        self,
+        initial_density: onp.Array1D[np.float64],
+        initial_background: onp.Array1D[np.float64],
+        mask: onp.Array1D[np.float64],
+        mesh_x: onp.Array1D[np.float64],
+        mesh_y: onp.Array1D[np.float64],
+        shape: tuple[int, int],
+    ) -> PSpiralFitIterator: ...
+
+class PSpiralFitIterator:
+    def __iter__(self) -> PSpiralFitIterator: ...
+    def __next__(self) -> PSpiralFitResult: ...
 
 class PSpiralFitResult:
     @property
@@ -88,3 +101,5 @@ class PSpiralFitResult:
     def nfev(self) -> int: ...
     @property
     def nit(self) -> int: ...
+    @property
+    def terminal(self) -> bool: ...
