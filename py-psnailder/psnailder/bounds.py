@@ -159,18 +159,48 @@ class ParameterBounds:
 
         """
 
-        self.alpha: Interval | Fixed = ParameterBounds._parse_bounds(alpha)
-        self.b: Interval | Fixed = ParameterBounds._parse_bounds(b)
-        self.c: Interval | Fixed = ParameterBounds._parse_bounds(c)
-        self.theta0: Interval | Fixed = ParameterBounds._parse_bounds(theta0)
-        self.scale_factor: Interval | Fixed = ParameterBounds._parse_bounds(scale_factor)
-        self.rho: Interval | Fixed = ParameterBounds._parse_bounds(rho)
+        self._alpha: Interval | Fixed = ParameterBounds._parse_bounds(alpha)
+        self._b: Interval | Fixed = ParameterBounds._parse_bounds(b)
+        self._c: Interval | Fixed = ParameterBounds._parse_bounds(c)
+        self._theta0: Interval | Fixed = ParameterBounds._parse_bounds(theta0)
+        self._scale_factor: Interval | Fixed = ParameterBounds._parse_bounds(scale_factor)
+        self._rho: Interval | Fixed = ParameterBounds._parse_bounds(rho)
 
-        ParameterBounds._validate_nonnegative("alpha", self.alpha)
-        ParameterBounds._validate_positive("b", self.b)
-        ParameterBounds._validate_nonnegative("c", self.c)
-        ParameterBounds._validate_positive("scale_factor", self.scale_factor)
-        ParameterBounds._validate_nonnegative("rho", self.rho)
+        ParameterBounds._validate_nonnegative("alpha", self._alpha)
+        ParameterBounds._validate_positive("b", self._b)
+        ParameterBounds._validate_nonnegative("c", self._c)
+        ParameterBounds._validate_positive("scale_factor", self._scale_factor)
+        ParameterBounds._validate_nonnegative("rho", self._rho)
+
+    @property
+    def alpha(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on alpha."""
+        return self._alpha
+
+    @property
+    def b(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on b."""
+        return self._b
+
+    @property
+    def c(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on c."""
+        return self._c
+
+    @property
+    def theta0(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on theta0."""
+        return self._theta0
+
+    @property
+    def scale_factor(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on scale_factor."""
+        return self._scale_factor
+
+    @property
+    def rho(self) -> Interval | Fixed:
+        """Interval | Fixed: The parameter bounds on rho."""
+        return self._rho
 
     @override
     def __str__(self) -> str:
