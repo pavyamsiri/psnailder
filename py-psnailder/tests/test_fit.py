@@ -14,6 +14,7 @@ from scipy.optimize import Bounds, OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
 from psnailder._python_backend import PythonFitBackend
+from psnailder._rust_backend import RustFitBackend
 from psnailder.fit import (
     FitFailure,
     FitFailureReason,
@@ -73,6 +74,30 @@ def test_rust_backend_can_be_selected() -> None:
     grid = np.ones((2, 2))
     outcome = fitter.fit_spiral_with_background(grid, grid, grid, grid)
     assert isinstance(outcome, FitSuccess | FitFailure)
+
+
+def test_rust_backend_forwards_native_fitter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The adapter constructs the native fitter with backend-neutral options."""
+    from psnailder import _internal  # noqa: PLC0415 -- optional extension is only needed by this test.
+
+    calls: list[dict[str, object]] = []
+
+    class FakeRustFitter:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+    monkeypatch.setattr(_internal, "PSpiralFitter", FakeRustFitter)
+    backend = RustFitBackend(
+        max_iterations=7,
+        atol=1e-3,
+        rtol=2e-3,
+        smoothing_func=None,
+        mask_func=None,
+        bounds=None,
+    )
+
+    assert isinstance(backend._rust_fitter, FakeRustFitter)  # noqa: SLF001 -- test the adapter boundary.
+    assert calls == [{"max_iterations": 7, "atol": 1e-3, "rtol": 2e-3}]
 
 
 def test_rust_backend_rejects_python_callbacks() -> None:

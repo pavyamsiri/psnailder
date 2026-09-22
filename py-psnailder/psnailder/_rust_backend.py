@@ -1,16 +1,19 @@
-"""Adapter for the current PyO3 Rust fitting binding.
+"""Adapter between the Python fitting protocol and the native Rust fitter.
 
-This is intentionally a small compatibility backend. The Rust binding currently
-accepts flattened, already-binned arrays and exposes a batch result only. Bounds,
-warm starts, Python callbacks, and per-iteration events will be added when the
-Rust core APIs support them.
+The adapter owns Python-specific configuration and converts it to native inputs:
+the mask becomes a numeric array, while unsupported callbacks and bounds are
+reported before fitting. The native fitter is constructed eagerly so extension
+availability and constructor configuration fail at backend creation time.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+import logging
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Final, override
 
 import numpy as np
+from scipy import special
 
 from ._backends import (
     BackendEvent,
@@ -22,10 +25,13 @@ from ._backends import (
     FitSuccess,
     FitTerminationReason,
     GaussianSmoothConfig,
+    MaskConfig,
     OptimizationDiagnostics,
     PSpiralFitResult,
     SigmoidMaskConfig,
+    SmoothConfig,
 )
+from ._internal import PSpiralFitter as RustPSpiralFitter
 from .model import PSpiralModel
 
 if TYPE_CHECKING:
@@ -34,9 +40,39 @@ if TYPE_CHECKING:
     from optype import numpy as onp
 
     from ._internal import PSpiralFitResult as _RustFitResult
-    from ._internal import PSpiralFitter as _RustFitter
     from ._internal import PSpiralModel as _RustModel
     from .bounds import ParameterBounds
+
+
+type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
+type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], onp.Array2D[np.float64]]
+
+log: Final[logging.Logger] = logging.getLogger(__name__)
+
+
+def create_sigmoid_mask(z_scale: float, vz_scale: float) -> _MaskFunc:
+    """Return a function that creates a sigmoid mask given a mesh over z and vz.
+
+    The mask is parameterised by the scale length and scale velocity.
+
+    Parameters
+    ----------
+    z_scale : float
+        The scale length.
+    vz_scale : float
+        The scale velocity.
+
+    Returns
+    -------
+    func : Callable[[Array2D[f64], Array2D[f64]], Array2D[f64]]
+        The sigmoid mask function.
+
+    """
+
+    def _func(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
+        return -special.expit(np.square(z_mesh / z_scale) + np.square(vz_mesh / vz_scale) - 1.0) + 1.0
+
+    return _func
 
 
 class RustFitBackend(FitBackend):
@@ -48,86 +84,90 @@ class RustFitBackend(FitBackend):
         max_iterations: int | None,
         atol: float,
         rtol: float,
-        smoothing_func: object,
-        mask_func: object,
+        smoothing_func: _SmoothingFunc | SmoothConfig | None,
+        mask_func: _MaskFunc | MaskConfig | None,
         bounds: ParameterBounds | Sequence[ParameterBounds] | None,
     ) -> None:
         self._max_iterations: int | None = max_iterations
         self._atol: float = atol
         self._rtol: float = rtol
-        self._smoothing_func: object = smoothing_func
-        self._mask_func: object = mask_func
+        _smooth_config: SmoothConfig = RustFitBackend._parse_smooth_func(smoothing_func)
+
+        self._mask_func: _MaskFunc = RustFitBackend._parse_mask_func(mask_func)
+
         self._bounds: object = bounds
-        self._rust_fitter: _RustFitter | None = None
+        self._rust_fitter: RustPSpiralFitter = RustPSpiralFitter(
+            max_iterations=max_iterations,
+            atol=atol,
+            rtol=rtol,
+        )
+
+    @staticmethod
+    def _parse_smooth_func(config: _SmoothingFunc | SmoothConfig | None) -> SmoothConfig:
+        if isinstance(config, Callable):
+            msg = "Python callbacks are not allowed for the rust backend's smoother."
+            raise TypeError(msg)
+
+        if isinstance(config, SmoothConfig):
+            if isinstance(config, GaussianSmoothConfig):
+                return config
+            msg = f"Unsupported smoothing config: {config}"
+            raise ValueError(msg)
+
+        return GaussianSmoothConfig()
+
+    @staticmethod
+    def _parse_mask_func(config: _MaskFunc | MaskConfig | None) -> _MaskFunc:
+        if isinstance(config, Callable):
+            return config
+
+        if isinstance(config, MaskConfig):
+            if isinstance(config, SigmoidMaskConfig):
+                return create_sigmoid_mask(config.z_scale, config.vz_scale)
+            msg = f"Unsupported masking config: {config}"
+            raise ValueError(msg)
+
+        return create_sigmoid_mask(1.0, 40.0)
 
     @override
     def fit(self, request: FitRequest) -> BackendResult:
-        return self._fit_once(request)
+        initial_density = request.initial_density
+        initial_background = request.initial_background
+        z_mesh = request.z_mesh
+        vz_mesh = request.vz_mesh
+        mask = self._mask_func(z_mesh, vz_mesh)
+        initial_density = request.initial_density
+        shape = initial_density.shape
+
+        res = self._rust_fitter.fit_spiral_with_background(
+            initial_density.flatten(),
+            initial_background.flatten(),
+            mask.flatten(),
+            z_mesh.flatten(),
+            vz_mesh.flatten(),
+            shape=shape,
+        )
+        return FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics())
 
     @override
     def fit_events(self, request: FitRequest) -> Iterator[BackendEvent]:
-        # The current binding is batch-only. Preserve the event API by yielding
-        # its converted terminal outcome; a native Rust iterator can replace
-        # this method without changing PSpiralFitter.
-        yield self._fit_once(request)
+        initial_density = request.initial_density
+        initial_background = request.initial_background
+        z_mesh = request.z_mesh
+        vz_mesh = request.vz_mesh
+        mask = self._mask_func(z_mesh, vz_mesh)
+        initial_density = request.initial_density
+        shape = initial_density.shape
 
-    def _fit_once(self, request: FitRequest) -> BackendResult:
-        unsupported = self._unsupported_reason(request)
-        if unsupported is not None:
-            return self._failure(unsupported)
-
-        try:
-            rust_fitter = self._get_rust_fitter()
-            mask = self._make_mask(request.z_mesh, request.vz_mesh)
-            shape = request.initial_density.shape
-            rust_result = rust_fitter.fit_spiral_with_background(
-                np.asarray(request.initial_density, dtype=np.float64).ravel(),
-                np.asarray(request.initial_background, dtype=np.float64).ravel(),
-                mask.ravel(),
-                np.asarray(request.z_mesh, dtype=np.float64).ravel(),
-                np.asarray(request.vz_mesh, dtype=np.float64).ravel(),
-                shape,
-            )
-        except (ImportError, ModuleNotFoundError) as exc:
-            return self._failure(f"Rust extension is unavailable: {exc}")
-        except (TypeError, ValueError) as exc:
-            return self._failure(f"Rust fitting failed: {exc}")
-
-        return FitSuccess(self._convert_result(rust_result, request), self._rust_diagnostics())
-
-    def _get_rust_fitter(self) -> _RustFitter:
-        if self._rust_fitter is None:
-            from . import _internal  # noqa: PLC0415 -- load the optional extension lazily.
-
-            smoothing_sigma = self._smoothing_sigma()
-            self._rust_fitter = _internal.PSpiralFitter(
-                max_iterations=self._max_iterations,
-                smoothing_sigma=smoothing_sigma,
-            )
-        return self._rust_fitter
-
-    def _make_mask(self, z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-        config = self._mask_func
-        if config is None:
-            config = SigmoidMaskConfig()
-        if not isinstance(config, SigmoidMaskConfig):
-            msg = "The Rust backend requires SigmoidMaskConfig; Python mask callbacks are unsupported."
-            raise TypeError(msg)
-        z_scale, vz_scale = config.z_scale, config.vz_scale
-        mask = -1.0 / (1.0 + np.exp(-(np.square(z_mesh / z_scale) + np.square(vz_mesh / vz_scale) - 1.0))) + 1.0
-        return np.asarray(mask, dtype=np.float64)
-
-    def _smoothing_sigma(self) -> float:
-        config = self._smoothing_func
-        if config is None:
-            return 2.0
-        if isinstance(config, GaussianSmoothConfig):
-            if config.z_scale != config.vz_scale:
-                msg = "The current Rust backend requires equal Gaussian smoothing scales."
-                raise ValueError(msg)
-            return config.z_scale
-        msg = "The Rust backend requires GaussianSmoothConfig; Python smoothing callbacks are unsupported."
-        raise TypeError(msg)
+        res = self._rust_fitter.fit_spiral_with_background(
+            initial_density.flatten(),
+            initial_background.flatten(),
+            mask.flatten(),
+            z_mesh.flatten(),
+            vz_mesh.flatten(),
+            shape=shape,
+        )
+        yield FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics())
 
     def _unsupported_reason(self, request: FitRequest) -> str | None:
         checks = (
@@ -138,7 +178,6 @@ class RustFitBackend(FitBackend):
             (request.rng is not None, "Rust backend accepts no numpy.random.Generator; seed support is not wired yet."),
             (not request.improve_background, "Rust binding does not yet expose fixed-background fitting."),
             (self._max_iterations == 0, "Rust binding currently requires at least one refinement iteration."),
-            (self._atol != 0.0 or self._rtol != 0.0, "Rust binding does not yet expose refinement tolerances."),
         )
         return next((message for condition, message in checks if condition), None)
 
@@ -170,7 +209,11 @@ class RustFitBackend(FitBackend):
             ],
             dtype=np.float64,
         )
-        winding = components[0].winding if components else 1
+        windings: list[int] = [int(component.winding) for component in components]
+        assert len(windings) >= 1, "Should always be at least 1 component."
+        assert all(winding == windings[0] for winding in windings), "windings should be the same across all components."
+        winding = int(windings[0])
+        assert winding in (-1, 1), "Winding should be either -1 or 1."
         return PSpiralModel(parameters, request.z_mesh, request.vz_mesh, background, winding=winding)
 
     @staticmethod

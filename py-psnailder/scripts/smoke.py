@@ -14,9 +14,8 @@ from phasmix.mock import MockModel
 
 from psnailder import fit
 from psnailder._background_utils import generate_initial_background
-from psnailder._internal import PSpiralFitter as PSpiralFitterRust
 from psnailder._likelihood_utils import ln_likelihood
-from psnailder.fit import PSpiralFitter as PSpiralFitterPython
+from psnailder.fit import PSpiralFitter
 
 
 def _main() -> None:
@@ -75,26 +74,26 @@ def _main() -> None:
     print(f"ln likelihood (null) = {ln_likelihood(density, initial_background, mask)}")
 
     print("\n--- Rust Version ---")
-    fitter_rust = PSpiralFitterRust(num_samples=256, max_iterations=10)
+
+    fitter_rust = PSpiralFitter(backend="rust", max_iterations=10)
     start_time = time.perf_counter()
-    res_rust = fitter_rust.fit_spiral_with_background(
-        density.flatten(),
-        initial_background.flatten(),
-        mask.flatten(),
-        x_mesh.flatten(),
-        y_mesh.flatten(),
-        (num_y_bins, num_x_bins),
+    outcome_rust = fitter_rust.fit_spiral_with_background(
+        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True, rng=np.random.default_rng(1)
     )
     elapsed_rust = time.perf_counter() - start_time
+    if isinstance(outcome_rust, fit.FitFailure):
+        print(f"rustthon fit failed: {outcome_rust.reason}: {outcome_rust.message}")
+        return
+    res_rust = outcome_rust.result
     print(f"Rust took {elapsed_rust:.3f} seconds")
-    print(f"Rust iterations: {res_rust.num_iterations}")
-    print(f"Rust converged: {res_rust.converged}")
+    print(f"Rust refinement attempts: {res_rust.num_iterations}")
+    print(f"Rust termination: {res_rust.reason}")
     print(f"Rust final model: {res_rust.final_model}")
     print(f"Rust final lnl: {res_rust.lnl}")
-    print(f"Rust pvalue : {res_rust.final_pvalue}")
+    print(f"Rust pvalue: {res_rust.final_model.pvalue(density, mask)}")
 
     print("\n--- Python Version ---")
-    fitter_py = PSpiralFitterPython(max_iterations=10)
+    fitter_py = PSpiralFitter(backend="python", max_iterations=10)
     start_time = time.perf_counter()
     outcome_py = fitter_py.fit_spiral_with_background(
         density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True, rng=np.random.default_rng(1)
@@ -111,8 +110,8 @@ def _main() -> None:
     print(f"Python final lnl: {res_py.lnl}")
     print(f"Python pvalue: {res_py.final_model.pvalue(density, mask)}")
 
-    rs_background = res_rust.final_background.reshape(x_mesh.shape)
-    rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background
+    rs_background = res_rust.final_model.background.reshape(x_mesh.shape)
+    rs_density = res_rust.final_model.prediction()
 
     fig = plt.figure(figsize=(12, 8))  # pyright: ignore[reportUnknownMemberType]
     # [true density, python density, rust density]

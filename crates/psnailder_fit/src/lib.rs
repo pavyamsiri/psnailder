@@ -5,12 +5,16 @@
 
 extern crate alloc;
 
+pub mod parameter_layout;
+
+pub use parameter_layout::{LayoutError, ParameterBound, ParameterLayout};
+
 use alloc::sync::Arc;
 use basin::{BoxConstraints, CostFunction};
 use core::convert;
 use itertools::izip;
 use psnailder_core::{PSpiralComponent, PSpiralModel, Winding, ln_likelihood};
-use psnailder_tiktak::TikTak;
+use psnailder_tiktak::{DynamicTikTak, TikTak};
 use wide::CmpLe as _;
 use wide::f64x4;
 
@@ -240,6 +244,8 @@ mod tests {
             fitter_double: fixed_signal_fitter(),
             max_iterations: Some(max_iterations),
             smoothing_sigma,
+            atol: 0.0,
+            rtol: 0.0,
         }
     }
 
@@ -258,8 +264,8 @@ mod tests {
         ] {
             let mut prediction = vec![0.0; coordinates.len()];
             model.perturbation_vec(coordinates, coordinates, &mut prediction);
-            for (value, background) in prediction.iter_mut().zip(background.iter()) {
-                *value *= background;
+            for (value, curr_background) in prediction.iter_mut().zip(background.iter()) {
+                *value *= curr_background;
             }
             let recomputed = ln_likelihood(&result.data, &prediction, mask);
             assert!(score.is_finite());
@@ -435,6 +441,43 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn runtime_objective_matches_single_component_objective() {
+        let data = [2.0; 7];
+        let background = [1.0; 7];
+        let coordinates = [0.1; 7];
+        let full = [0.5, 0.05, 0.002, 0.0, 40.0, 0.09];
+        let bounds: Vec<_> = full
+            .iter()
+            .map(|value| ParameterBound::Fixed(*value))
+            .collect();
+        let layout = ParameterLayout::from_bounds(&bounds).unwrap();
+        let runtime = RuntimePSpiralModelProblem {
+            data: &data,
+            background: &background,
+            mask: &[1.0; 7],
+            x: &coordinates,
+            y: &coordinates,
+            winding: Winding::Positive,
+            layout: &layout,
+            num_components: 1,
+        };
+        let legacy = PSpiralModelProblem::<1> {
+            data: &data,
+            background: &background,
+            mask: &[1.0; 7],
+            x: &coordinates,
+            y: &coordinates,
+            winding: Winding::Positive,
+            lb: &full.to_vec(),
+            ub: &full.to_vec(),
+        };
+        assert_eq!(
+            runtime.cost(&Vec::new()).unwrap(),
+            legacy.cost(&full.to_vec()).unwrap()
+        );
+    }
 }
 
 impl BoxConstraints for PSpiralModelProblem<'_, 1> {
@@ -455,6 +498,193 @@ impl BoxConstraints for PSpiralModelProblem<'_, 2> {
     fn upper(&self) -> &Self::Param {
         self.ub
     }
+}
+
+/// Runtime-sized spiral objective used when some parameters are fixed.
+#[derive(Debug, Clone)]
+pub struct RuntimePSpiralModelProblem<'prob> {
+    /// The density grid.
+    pub data: &'prob [f64],
+    /// The estimated background grid.
+    pub background: &'prob [f64],
+    /// The evaluation mask.
+    pub mask: &'prob [f64],
+    /// Grid x coordinates.
+    pub x: &'prob [f64],
+    /// Grid y coordinates.
+    pub y: &'prob [f64],
+    /// Winding direction shared by all components.
+    pub winding: Winding,
+    /// Mapping between free and full parameter vectors.
+    pub layout: &'prob ParameterLayout,
+    /// Number of six-parameter components in the full vector.
+    pub num_components: usize,
+}
+
+impl CostFunction for RuntimePSpiralModelProblem<'_> {
+    type Param = Vec<f64>;
+    type Output = f64;
+    type Error = convert::Infallible;
+
+    fn cost(&self, param: &Self::Param) -> Result<Self::Output, Self::Error> {
+        let Ok(full) = self.layout.unpack(param) else {
+            return Ok(f64::INFINITY);
+        };
+        if full.len() != self.num_components * 6 {
+            return Ok(f64::INFINITY);
+        }
+        let components: Vec<_> = full
+            .chunks_exact(6)
+            .map(|values| PSpiralComponent {
+                alpha: values[0],
+                b_winding: values[1],
+                c_winding: values[2],
+                theta0: values[3],
+                scale_factor: values[4],
+                rho: values[5],
+                winding: self.winding,
+                flattening_strength: 0.1,
+            })
+            .collect();
+
+        let (data_chunks, data_remainder) = self.data.as_chunks::<4>();
+        let (x_chunks, x_remainder) = self.x.as_chunks::<4>();
+        let (y_chunks, y_remainder) = self.y.as_chunks::<4>();
+        let (background_chunks, background_remainder) = self.background.as_chunks::<4>();
+        let (mask_chunks, mask_remainder) = self.mask.as_chunks::<4>();
+        let mut result = 0.0;
+        let mut accumulator = f64x4::ZERO;
+
+        for (current_data, x, y, background, current_mask) in izip!(
+            data_chunks,
+            x_chunks,
+            y_chunks,
+            background_chunks,
+            mask_chunks
+        ) {
+            let data = f64x4::from(*current_data);
+            let x = f64x4::from(*x);
+            let y = f64x4::from(*y);
+            let background = f64x4::from(*background);
+            let mask = f64x4::from(*current_mask);
+            let mut perturbation = f64x4::ZERO;
+            for component in &components {
+                let current = component.perturbation_wide(x, y);
+                if current.to_array().iter().any(|value| !value.is_finite()) {
+                    return Ok(f64::INFINITY);
+                }
+                perturbation = perturbation.max(current);
+            }
+            let prediction = perturbation * background;
+            if prediction.to_array().iter().any(|value| !value.is_finite()) {
+                return Ok(f64::INFINITY);
+            }
+            let residual = mask * (data - prediction);
+            let term = (residual * residual) / prediction;
+            accumulator += prediction.simd_le(f64x4::ZERO).blend(f64x4::ZERO, term);
+        }
+
+        for (data, x, y, background, mask) in izip!(
+            data_remainder,
+            x_remainder,
+            y_remainder,
+            background_remainder,
+            mask_remainder
+        ) {
+            let perturbation = components
+                .iter()
+                .map(|component| component.perturbation_scalar(*x, *y))
+                .fold(0.0, f64::max);
+            let prediction = perturbation * background;
+            if !prediction.is_finite() {
+                return Ok(f64::INFINITY);
+            }
+            if prediction > 0.0 {
+                let residual = mask * (data - prediction);
+                result += (residual * residual) / prediction;
+            }
+        }
+        Ok(0.5 * (result + accumulator.reduce_add()))
+    }
+}
+
+impl BoxConstraints for RuntimePSpiralModelProblem<'_> {
+    fn lower(&self) -> &Self::Param {
+        self.layout.lower()
+    }
+
+    fn upper(&self) -> &Self::Param {
+        self.layout.upper()
+    }
+}
+
+/// Fit a runtime-sized model using a compact parameter layout.
+///
+/// This retains the SIMD likelihood calculation while allowing arbitrary
+/// fixed/free parameter combinations.
+pub fn fit_with_parameter_layout(
+    data: &[f64],
+    background: &[f64],
+    mask: &[f64],
+    mesh_x: &[f64],
+    mesh_y: &[f64],
+    winding: Winding,
+    layout: &ParameterLayout,
+    num_components: usize,
+    log_num_samples: u8,
+    keep_ratio: f32,
+) -> (PSpiralModel, f64) {
+    let objective = RuntimePSpiralModelProblem {
+        data,
+        background,
+        mask,
+        x: mesh_x,
+        y: mesh_y,
+        winding,
+        layout,
+        num_components,
+    };
+    let full_params = if layout.free_len() == 0 {
+        layout.unpack(&[]).expect("an all-fixed layout must unpack")
+    } else {
+        let optimizer =
+            DynamicTikTak::new(layout.free_len(), log_num_samples, keep_ratio, 0.1, 0.995);
+        let bounds: Vec<_> = layout
+            .lower()
+            .iter()
+            .copied()
+            .zip(layout.upper().iter().copied())
+            .collect();
+        let result = optimizer
+            .minimize(&objective, &bounds)
+            .expect("the objective is infallible");
+        layout
+            .unpack(&result.params)
+            .expect("optimizer results satisfy layout bounds")
+    };
+    let components = full_params
+        .chunks_exact(6)
+        .map(|values| PSpiralComponent {
+            alpha: values[0],
+            b_winding: values[1],
+            c_winding: values[2],
+            theta0: values[3],
+            scale_factor: values[4],
+            rho: values[5],
+            winding,
+            flattening_strength: 0.1,
+        })
+        .collect();
+    let cost = objective
+        .cost(&if layout.free_len() == 0 {
+            Vec::new()
+        } else {
+            layout
+                .pack(&full_params)
+                .expect("expanded parameters can be packed")
+        })
+        .expect("the objective is infallible");
+    (PSpiralModel { components }, -cost)
 }
 
 /// A fitter for phase spiral models with a fixed number of parameters.
@@ -512,6 +742,10 @@ pub struct PSpiralFitter {
     pub max_iterations: Option<usize>,
     /// Sigma for Gaussian smoothing applied to the background during refinement.
     pub smoothing_sigma: f64,
+    /// Absolute refinement improvement tolerance.
+    pub atol: f64,
+    /// Relative refinement improvement tolerance.
+    pub rtol: f64,
 }
 
 /// The results of a spiral model fit.
@@ -579,6 +813,10 @@ pub struct PSpiralFitterIterative<'fit> {
     pub converged: bool,
     /// The sigma used when smoothing the background during the refinement process.
     pub smoothing_sigma: f64,
+    /// Absolute refinement improvement tolerance.
+    pub atol: f64,
+    /// Relative refinement improvement tolerance.
+    pub rtol: f64,
     /// Whether to perform iterative background refinement.
     pub improve_background: bool,
     /// Whether the refinement process has terminated.
@@ -743,7 +981,9 @@ impl Iterator for PSpiralFitterIterative<'_> {
         let quality = ln_likelihood(&self.initial_density, &new_data, &self.mask);
 
         // The new background provides a worse fit so we are done with refinement.
-        if self.best_quality > quality {
+        let improvement = quality - self.best_quality;
+        let tolerance = self.atol + self.rtol * self.best_quality.abs();
+        if improvement <= tolerance {
             // We only converge if the best fitting model (and hence background) was not the initial fit.
             self.converged = self.best_model.is_some();
             if self.best_model.is_none() {
@@ -853,6 +1093,8 @@ impl PSpiralFitter {
             max_iterations: self.max_iterations,
             converged: false,
             smoothing_sigma: self.smoothing_sigma,
+            atol: self.atol,
+            rtol: self.rtol,
             improve_background,
             is_finished: false,
         }

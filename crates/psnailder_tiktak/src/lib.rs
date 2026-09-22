@@ -5,6 +5,7 @@ use argmin_testfunctions::rosenbrock;
 use basin::CostFunction;
 use core::{cmp, convert, fmt};
 use psnailder_core::usize_to_f64;
+use rayon::prelude::*;
 
 #[derive(Debug)]
 pub struct OptimizationResult {
@@ -48,6 +49,207 @@ pub struct TikTak<const N: usize> {
     pub max_weight: f64,
 
     pub points: Vec<Vec<f64>>,
+}
+
+/// A `TikTak` optimizer whose search dimension is selected at runtime.
+///
+/// This is useful when a parameter layout removes fixed parameters from the
+/// optimization vector. The const-generic [`TikTak`] remains available for
+/// callers that know the dimension at compile time.
+pub struct DynamicTikTak {
+    /// Number of Sobol samples.
+    pub num_samples: usize,
+    /// Number of retained starting points.
+    pub num_star: usize,
+    /// Minimum Nelder--Mead interpolation weight.
+    pub min_weight: f64,
+    /// Maximum Nelder--Mead interpolation weight.
+    pub max_weight: f64,
+    /// Sobol points in the unit hypercube.
+    pub points: Vec<Vec<f64>>,
+}
+
+impl DynamicTikTak {
+    /// Initialise a runtime-dimension `TikTak` optimizer.
+    ///
+    /// # Panics
+    /// Panics when the dimension or sampling parameters are outside the valid
+    /// ranges described by the corresponding assertions.
+    #[must_use]
+    pub fn new(
+        ndim: usize,
+        log_num_samples: u8,
+        keep_ratio: f32,
+        min_weight: f64,
+        max_weight: f64,
+    ) -> Self {
+        assert!(ndim > 0, "the search dimension must be greater than zero.");
+        assert!(
+            log_num_samples <= 16,
+            "too much memory required for more than 2^16 samples."
+        );
+        assert!(
+            log_num_samples > 0,
+            "the log of the number of samples can't be less than or equal to 0."
+        );
+        assert!(
+            keep_ratio > 0.0,
+            "the number of points to keep must be greater than 0."
+        );
+        assert!(
+            keep_ratio <= 1.0,
+            "the number of points to keep must be less than the total number of samples."
+        );
+        assert!(
+            min_weight < max_weight,
+            "the minimum weight must be less than the maximum weight."
+        );
+        assert!(
+            min_weight >= 0.0,
+            "the minimum weight must be non-negative."
+        );
+        assert!(max_weight <= 1.0, "the maximum weight can not exceed 1.");
+
+        let num_samples = 2 << log_num_samples;
+        let num_samples_f64 = usize_to_f64!(num_samples, "`num_samples` can't exceed 2^16.");
+        let num_star = (f64::from(keep_ratio) * num_samples_f64)
+            .ceil()
+            .clamp(1.0, num_samples_f64) as usize;
+        let points = (0..num_samples)
+            .map(|i| {
+                let mut point = Vec::with_capacity(ndim);
+                let num_batches = ndim / 4 + 1;
+                for dimension_set in 0..num_batches {
+                    point.extend(
+                        sobol_burley::sample_4d(i as u32, dimension_set as u32, 0)
+                            .into_iter()
+                            .map(f64::from),
+                    );
+                }
+                point.truncate(ndim);
+                point
+            })
+            .collect();
+        Self {
+            num_samples,
+            num_star,
+            min_weight,
+            max_weight,
+            points,
+        }
+    }
+
+    /// Minimize a cost function using runtime-sized parameter vectors.
+    ///
+    /// # Errors
+    /// Returns an error when an objective evaluation fails.
+    ///
+    /// # Panics
+    /// Panics when `bounds` does not match the runtime search dimension.
+    pub fn minimize<C>(
+        &self,
+        cost_func: &C,
+        bounds: &[(f64, f64)],
+    ) -> Result<OptimizationResult, C::Error>
+    where
+        C: CostFunction<Param = Vec<f64>, Output = f64>
+            + Clone
+            + fmt::Debug
+            + Sync
+            + Send
+            + basin::BoxConstraints,
+        C::Error: Send + fmt::Display,
+    {
+        assert_eq!(
+            bounds.len(),
+            self.points.first().map_or(0, Vec::len),
+            "bounds must match the runtime search dimension",
+        );
+        let mut heap: BinaryHeap<OrderedPoint> = BinaryHeap::with_capacity(self.num_star + 1);
+        let evaluated_points: Vec<_> = self
+            .points
+            .par_iter()
+            .map(|point| {
+                let scaled_point = point
+                    .iter()
+                    .zip(bounds.iter())
+                    .map(|(unit, (lb, ub))| lb + unit * (ub - lb))
+                    .collect();
+                let cost = cost_func.cost(&scaled_point)?;
+                Ok::<_, C::Error>(OrderedPoint {
+                    cost,
+                    point: scaled_point,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for point in evaluated_points {
+            heap.push(point);
+            if heap.len() > self.num_star {
+                heap.pop();
+            }
+        }
+        assert_eq!(
+            heap.len(),
+            self.num_star,
+            "the heap contains the top `num_star` points."
+        );
+        let best_points = heap.into_sorted_vec();
+        let global_best = best_points
+            .first()
+            .expect("num_star is at least one")
+            .point
+            .clone();
+        let mut solutions = best_points
+            .into_par_iter()
+            .enumerate()
+            .filter_map(|(idx, seed)| {
+                let weight = (usize_to_f64!(idx + 1, "the index cannot exceed 2^52.")
+                    / usize_to_f64!(self.num_star, "`num_star` cannot exceed 2^52."))
+                .sqrt()
+                .clamp(self.min_weight, self.max_weight);
+                let new_seed: Vec<f64> = seed
+                    .point
+                    .iter()
+                    .zip(global_best.iter())
+                    .map(|(current, best)| current.mul_add(1.0 - weight, weight * best))
+                    .collect();
+                match basin::Executor::new(
+                    cost_func.clone(),
+                    basin::NelderMead::standard().projected(),
+                    basin::BasicSimplexState::new(new_seed),
+                )
+                .max_iter(200)
+                .run()
+                {
+                    Ok(result) => Some((
+                        result.best_cost(),
+                        result.best_param().to_owned(),
+                        result.cost_evals(),
+                    )),
+                    Err(error) => {
+                        eprintln!("restart {idx} failed: {error}");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        solutions.sort_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .expect("there should be no NaNs.")
+        });
+        let (cost, params, _) = solutions.first().expect("at least one restart succeeds");
+        let nfev = solutions
+            .iter()
+            .map(|(_, _, evaluations)| evaluations)
+            .sum::<u64>()
+            + u64::try_from(self.num_samples).expect("sample count fits in u64");
+        Ok(OptimizationResult {
+            params: params.clone(),
+            cost: *cost,
+            nfev,
+        })
+    }
 }
 
 impl<const N: usize> TikTak<N> {

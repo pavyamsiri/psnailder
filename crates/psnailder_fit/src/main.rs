@@ -72,6 +72,8 @@ fn main() {
         },
         max_iterations: Some(50),
         smoothing_sigma: 2.0,
+        atol: 0.0,
+        rtol: 0.0,
     };
 
     let mask_func = create_sigmoid_mask(psnailder_math::expit, 1.0, 40.0);

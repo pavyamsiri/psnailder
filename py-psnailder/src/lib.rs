@@ -178,8 +178,11 @@ pub struct PSpiralFitter {
 #[pymethods]
 impl PSpiralFitter {
     #[new]
-    #[pyo3(signature = (num_samples=4096, max_iterations=Some(50), smoothing_sigma=2.0))]
-    fn new(num_samples: usize, max_iterations: Option<usize>, smoothing_sigma: f64) -> Self {
+    #[pyo3(signature = (max_iterations=Some(50), atol=0.0, rtol=0.0))]
+    fn new(max_iterations: Option<usize>, atol: f64, rtol: f64) -> Self {
+        // TikTak sampling remains an internal implementation detail until the
+        // runtime parameter-layout path replaces the fixed 1-/2-component path.
+        let num_samples = 4096usize;
         let tiktak1 = psnailder_tiktak::TikTak::<6>::new(
             (num_samples as f64).log2() as u8,
             128.0f32.recip(),
@@ -221,7 +224,9 @@ impl PSpiralFitter {
                     rho_bounds,
                 },
                 max_iterations,
-                smoothing_sigma,
+                smoothing_sigma: 2.0,
+                atol,
+                rtol,
             },
         }
     }
