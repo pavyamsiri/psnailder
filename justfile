@@ -2,7 +2,7 @@ sync:
     cd py-psnailder && uv sync
 
 benchmark:
-	cd py-psnailder && uv run psnailder/__init__.py
+	cd py-psnailder && uv run scripts/smoke.py
 
 build: sync
 	cd py-psnailder && uv run maturin develop --release
