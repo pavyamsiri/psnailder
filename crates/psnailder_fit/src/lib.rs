@@ -238,14 +238,15 @@ mod tests {
         }
     }
 
-    fn refinement_fitter(max_iterations: usize, smoothing_sigma: f64) -> PSpiralFitter {
+    fn refinement_fitter(max_iterations: usize, sigma_z: f64, sigma_vz: f64) -> PSpiralFitter {
         PSpiralFitter {
             fitter_single: fixed_signal_fitter(),
             fitter_double: fixed_signal_fitter(),
             max_iterations: Some(max_iterations),
-            smoothing_sigma,
             atol: 0.0,
             rtol: 0.0,
+            sigma_z,
+            sigma_vz,
         }
     }
 
@@ -282,7 +283,7 @@ mod tests {
         let background = [2.5; 6];
         let coordinates = [0.1; 6];
         let mask = [1.0; 6];
-        let fitter = refinement_fitter(1, 0.0);
+        let fitter = refinement_fitter(1, 0.0, 0.0);
         for count in [1, 2] {
             let mut iter = fitter.fit_spiral_with_background_iterative(
                 &data,
@@ -313,7 +314,7 @@ mod tests {
         let data = [1.0, 3.0, 2.0, 4.0, 2.0, 3.0];
         let coordinates = [0.1; 6];
         let mask = [1.0; 6];
-        let fitter = refinement_fitter(3, 1.0);
+        let fitter = refinement_fitter(3, 1.0, 1.0);
         for count in [1, 2] {
             let mut iter = fitter.fit_spiral_with_background_iterative(
                 &data,
@@ -341,7 +342,7 @@ mod tests {
         let background = [2.5; 6];
         let coordinates = [0.1; 6];
         let mask = [1.0; 6];
-        let fitter = refinement_fitter(3, 0.0);
+        let fitter = refinement_fitter(3, 0.0, 0.0);
         for count in [1, 2] {
             let mut iter = fitter.fit_spiral_with_background_iterative(
                 &data,
@@ -359,7 +360,8 @@ mod tests {
             assert!(!accepted.converged);
             // Force a worse proposal next: smoothing moves away from the
             // exact fit. Only the proposal changes, not the accepted state.
-            iter.smoothing_sigma = 1.0;
+            iter.sigma_z = 1.0;
+            iter.sigma_vz = 1.0;
             let rejected = iter.next().unwrap();
             assert_consistent_result(&accepted, &coordinates, &mask);
             assert_consistent_result(&rejected, &coordinates, &mask);
@@ -378,7 +380,7 @@ mod tests {
         let background = [2.5; 6];
         let coordinates = [0.1; 6];
         let mask = [1.0; 6];
-        let fitter = refinement_fitter(3, 0.0);
+        let fitter = refinement_fitter(3, 0.0, 0.0);
         for count in [1, 2] {
             let mut iter = fitter.fit_spiral_with_background_iterative(
                 &data,
@@ -740,8 +742,10 @@ pub struct PSpiralFitter {
     pub fitter_double: TwoArmFitter,
     /// Maximum number of iterations for background refinement.
     pub max_iterations: Option<usize>,
-    /// Sigma for Gaussian smoothing applied to the background during refinement.
-    pub smoothing_sigma: f64,
+    /// Sigma for Gaussian smoothing applied to the background during refinement for z-axis.
+    pub sigma_z: f64,
+    /// Sigma for Gaussian smoothing applied to the background during refinement for Vz-axis.
+    pub sigma_vz: f64,
     /// Absolute refinement improvement tolerance.
     pub atol: f64,
     /// Relative refinement improvement tolerance.
@@ -811,8 +815,10 @@ pub struct PSpiralFitterIterative<'fit> {
     pub max_iterations: Option<usize>,
     /// Whether the background refinement process has converged.
     pub converged: bool,
-    /// The sigma used when smoothing the background during the refinement process.
-    pub smoothing_sigma: f64,
+    /// Sigma for Gaussian smoothing applied to the background during refinement for z-axis.
+    pub sigma_z: f64,
+    /// Sigma for Gaussian smoothing applied to the background during refinement for Vz-axis.
+    pub sigma_vz: f64,
     /// Absolute refinement improvement tolerance.
     pub atol: f64,
     /// Relative refinement improvement tolerance.
@@ -957,7 +963,7 @@ impl Iterator for PSpiralFitterIterative<'_> {
 
         // Smoothed background
         let blurred_background =
-            gaussian_blur_2d(&next_background, self.shape, self.smoothing_sigma);
+            gaussian_blur_2d(&next_background, self.shape, self.sigma_z, self.sigma_vz);
         let mut blurred_background_vec = blurred_background.to_vec();
 
         // Normalize the predicted counts, not the background alone. The
@@ -1097,7 +1103,8 @@ impl PSpiralFitter {
             iteration_index: 0,
             max_iterations: self.max_iterations,
             converged: false,
-            smoothing_sigma: self.smoothing_sigma,
+            sigma_z: self.sigma_z,
+            sigma_vz: self.sigma_vz,
             atol: self.atol,
             rtol: self.rtol,
             improve_background,
@@ -1368,31 +1375,46 @@ impl PSpiralFitterND<12> {
 
 /// Perform a Gaussian blur in 2D on the given data.
 #[must_use]
-fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64]> {
+fn gaussian_blur_2d(
+    data: &[f64],
+    shape: (usize, usize),
+    sigma_z: f64,
+    sigma_vz: f64,
+) -> Arc<[f64]> {
     let (rows, cols) = shape;
     let num_cells = rows * cols;
     assert_eq!(data.len(), num_cells, "`data` must equal `num_cells`.");
 
-    if sigma <= 0.0 {
-        return Arc::from(data);
-    }
-
-    let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
-    let mut kernel = vec![0.0; kernel_size];
-    let half_size: i32 = (kernel_size / 2)
+    let make_kernel = |sigma: f64| {
+        if sigma <= 0.0 {
+            return vec![1.0];
+        }
+        let kernel_size = (sigma * 4.0).ceil() as usize * 2 + 1;
+        let mut kernel = vec![0.0; kernel_size];
+        let half_size: i32 = (kernel_size / 2)
+            .try_into()
+            .expect("the kernel size will not exceed twice the limit of i32.");
+        let s2 = 2.0 * sigma * sigma;
+        let mut sum = 0.0;
+        for (i, kk) in kernel.iter_mut().enumerate() {
+            let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
+            let x = f64::from(idx_i32 - half_size);
+            *kk = (-x * x / s2).exp();
+            sum += *kk;
+        }
+        for kk in &mut kernel {
+            *kk /= sum;
+        }
+        kernel
+    };
+    let z_kernel = make_kernel(sigma_z);
+    let vz_kernel = make_kernel(sigma_vz);
+    let z_half_size: i32 = (z_kernel.len() / 2)
         .try_into()
         .expect("the kernel size will not exceed twice the limit of i32.");
-    let s2 = 2.0 * sigma * sigma;
-    let mut sum = 0.0;
-    for (i, kk) in kernel.iter_mut().enumerate() {
-        let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-        let x = f64::from(idx_i32 - half_size);
-        *kk = (-x * x / s2).exp();
-        sum += *kk;
-    }
-    for kk in kernel.iter_mut() {
-        *kk /= sum;
-    }
+    let vz_half_size: i32 = (vz_kernel.len() / 2)
+        .try_into()
+        .expect("the kernel size will not exceed twice the limit of i32.");
 
     let mut out = ndarray::Array2::from_shape_vec(shape, data.to_vec()).unwrap();
     let mut temp = ndarray::Array2::zeros(shape);
@@ -1407,9 +1429,9 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
                 .try_into()
                 .expect("the column index will not exceed i32.");
             let mut val = 0.0;
-            for (i, kk) in kernel.iter().enumerate() {
+            for (i, kk) in z_kernel.iter().enumerate() {
                 let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-                let cc = (col_idx_i32 + idx_i32 - half_size).clamp(0, max_col_idx - 1) as usize;
+                let cc = (col_idx_i32 + idx_i32 - z_half_size).clamp(0, max_col_idx - 1) as usize;
                 val += out[[row_idx, cc]] * kk;
             }
             temp[[row_idx, col_idx]] = val;
@@ -1426,9 +1448,9 @@ fn gaussian_blur_2d(data: &[f64], shape: (usize, usize), sigma: f64) -> Arc<[f64
             .expect("the row index will not exceed i32.");
         for col_idx in 0..cols {
             let mut val = 0.0;
-            for (i, kk) in kernel.iter().enumerate() {
+            for (i, kk) in vz_kernel.iter().enumerate() {
                 let idx_i32: i32 = i.try_into().expect("the index will not exceed i32.");
-                let rr = (row_idx_i32 + idx_i32 - half_size).clamp(0, max_row_idx - 1) as usize;
+                let rr = (row_idx_i32 + idx_i32 - vz_half_size).clamp(0, max_row_idx - 1) as usize;
                 val += temp[[rr, col_idx]] * kk;
             }
             out[[row_idx, col_idx]] = val;

@@ -32,6 +32,7 @@ from ._backends import (
     SmoothConfig,
 )
 from ._internal import PSpiralFitter as RustPSpiralFitter
+from .bounds import Fixed, Interval, ParameterBounds
 from .model import PSpiralModel
 
 if TYPE_CHECKING:
@@ -41,11 +42,11 @@ if TYPE_CHECKING:
 
     from ._internal import PSpiralFitResult as _RustFitResult
     from ._internal import PSpiralModel as _RustModel
-    from .bounds import ParameterBounds
 
 
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], onp.Array2D[np.float64]]
+type _RustBound = tuple[float, float]
 
 log: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -88,28 +89,30 @@ class RustFitBackend(FitBackend):
         mask_func: _MaskFunc | MaskConfig | None,
         bounds: ParameterBounds | Sequence[ParameterBounds] | None,
     ) -> None:
-        self._max_iterations: int | None = max_iterations
-        self._atol: float = atol
-        self._rtol: float = rtol
-        _smooth_config: SmoothConfig = RustFitBackend._parse_smooth_func(smoothing_func)
+        smooth_config = RustFitBackend._parse_smooth_func(smoothing_func)
 
         self._mask_func: _MaskFunc = RustFitBackend._parse_mask_func(mask_func)
-
-        self._bounds: object = bounds
+        self._bounds: ParameterBounds | Sequence[ParameterBounds] = bounds if bounds is not None else ParameterBounds()
         self._rust_fitter: RustPSpiralFitter = RustPSpiralFitter(
             max_iterations=max_iterations,
             atol=atol,
             rtol=rtol,
+            sigma_z=smooth_config.z_scale,
+            sigma_vz=smooth_config.vz_scale,
+            bounds=self._rust_bounds_components(),
         )
 
     @staticmethod
-    def _parse_smooth_func(config: _SmoothingFunc | SmoothConfig | None) -> SmoothConfig:
+    def _parse_smooth_func(config: _SmoothingFunc | SmoothConfig | None) -> GaussianSmoothConfig:
         if isinstance(config, Callable):
             msg = "Python callbacks are not allowed for the rust backend's smoother."
             raise TypeError(msg)
 
         if isinstance(config, SmoothConfig):
             if isinstance(config, GaussianSmoothConfig):
+                if config.z_scale != config.vz_scale:
+                    msg = "The Rust backend currently requires equal Gaussian smoothing scales."
+                    raise ValueError(msg)
                 return config
             msg = f"Unsupported smoothing config: {config}"
             raise ValueError(msg)
@@ -129,8 +132,58 @@ class RustFitBackend(FitBackend):
 
         return create_sigmoid_mask(1.0, 40.0)
 
+    def _component_bounds(self, num_components: int) -> tuple[ParameterBounds, ...]:
+        """Apply Python's broadcasting/prefix rules before native conversion."""
+        if num_components < 1:
+            msg = "Component bounds require a positive component count."
+            raise ValueError(msg)
+        if isinstance(self._bounds, ParameterBounds):
+            return (self._bounds,) * num_components
+        if num_components > len(self._bounds):
+            msg = "Not enough bounds for the requested component count."
+            raise ValueError(msg)
+        return tuple(self._bounds[:num_components])
+
+    def _rust_bounds(self, num_components: int) -> tuple[_RustBound, ...]:
+        """Serialize named Python bounds in Rust's component-major order.
+
+        Fixed values and zero-width intervals are represented by equal endpoints;
+        the Rust layout treats those entries as fixed and removes them from the
+        optimization vector.
+        """
+        serialized: list[_RustBound] = []
+        for component in self._component_bounds(num_components):
+            serialized.extend(RustFitBackend._rust_bounds_for_component(component))
+        return tuple(serialized)
+
+    def _rust_bounds_components(self) -> tuple[tuple[_RustBound, ...], ...]:
+        """Serialize configured bounds for the native one-/two-component fitter."""
+        if isinstance(self._bounds, ParameterBounds):
+            return (self._rust_bounds(1),)
+        if not self._bounds:
+            msg = "At least one component bound set is required."
+            raise ValueError(msg)
+        if len(self._bounds) > 2:
+            msg = "The Rust backend supports at most two component bound sets."
+            raise ValueError(msg)
+        return tuple(RustFitBackend._rust_bounds_for_component(component) for component in self._bounds)
+
+    @staticmethod
+    def _rust_bounds_for_component(bounds: ParameterBounds) -> tuple[_RustBound, ...]:
+        serialized: list[_RustBound] = []
+        for bound in (bounds.alpha, bounds.b, bounds.c, bounds.theta0, bounds.scale_factor, bounds.rho):
+            if isinstance(bound, Fixed):
+                serialized.append((bound.value, bound.value))
+            else:
+                assert isinstance(bound, Interval)
+                serialized.append((bound.lower, bound.upper))
+        return tuple(serialized)
+
     @override
     def fit(self, request: FitRequest) -> BackendResult:
+        unsupported = self._unsupported_reason(request)
+        if unsupported is not None:
+            return self._failure(unsupported)
         initial_density = request.initial_density
         initial_background = request.initial_background
         z_mesh = request.z_mesh
@@ -151,6 +204,10 @@ class RustFitBackend(FitBackend):
 
     @override
     def fit_events(self, request: FitRequest) -> Iterator[BackendEvent]:
+        unsupported = self._unsupported_reason(request)
+        if unsupported is not None:
+            yield self._failure(unsupported)
+            return
         initial_density = request.initial_density
         initial_background = request.initial_background
         z_mesh = request.z_mesh
@@ -158,6 +215,10 @@ class RustFitBackend(FitBackend):
         mask = self._mask_func(z_mesh, vz_mesh)
         initial_density = request.initial_density
         shape = initial_density.shape
+        seed: int | None = request.rng.integers(low=0, high=2**64 - 1, size=1)[0] if request.rng is not None else None
+
+        # TODO: Use seed
+        _ = seed
 
         res = self._rust_fitter.fit_spiral_with_background(
             initial_density.flatten(),
@@ -171,13 +232,10 @@ class RustFitBackend(FitBackend):
 
     def _unsupported_reason(self, request: FitRequest) -> str | None:
         checks = (
-            (self._bounds is not None, "Rust backend does not yet support ParameterBounds."),
             (request.num_components is not None, "Rust backend currently performs automatic component selection only."),
             (request.winding is not None, "Rust backend currently selects winding automatically only."),
             (request.warm_start is not None, "Rust backend does not yet support warm starts."),
-            (request.rng is not None, "Rust backend accepts no numpy.random.Generator; seed support is not wired yet."),
             (not request.improve_background, "Rust binding does not yet expose fixed-background fitting."),
-            (self._max_iterations == 0, "Rust binding currently requires at least one refinement iteration."),
         )
         return next((message for condition, message in checks if condition), None)
 

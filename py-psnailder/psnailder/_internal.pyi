@@ -42,7 +42,15 @@ class PSpiralModel:
     def perturbation(self, z: onp.Array1D[np.float64], vz: onp.Array1D[np.float64]) -> onp.Array1D[np.float64]: ...
 
 class PSpiralFitter:
-    def __init__(self, max_iterations: int | None = 50, atol: float = 0.0, rtol: float = 0.0) -> None: ...
+    def __init__(
+        self,
+        max_iterations: int | None = 50,
+        atol: float = 0.0,
+        rtol: float = 0.0,
+        sigma_z: float = 2.0,
+        sigma_vz: float = 2.0,
+        bounds: Sequence[Sequence[tuple[float, float]]] | None = None,
+    ) -> None: ...
     def fit_spiral_with_background(
         self,
         initial_density: onp.Array1D[np.float64],

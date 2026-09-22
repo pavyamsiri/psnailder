@@ -71,7 +71,8 @@ fn main() {
             rho_bounds: (0.0, 0.18),
         },
         max_iterations: Some(50),
-        smoothing_sigma: 2.0,
+        sigma_z: 2.0,
+        sigma_vz: 2.0,
         atol: 0.0,
         rtol: 0.0,
     };

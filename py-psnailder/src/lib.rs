@@ -178,8 +178,15 @@ pub struct PSpiralFitter {
 #[pymethods]
 impl PSpiralFitter {
     #[new]
-    #[pyo3(signature = (max_iterations=Some(50), atol=0.0, rtol=0.0))]
-    fn new(max_iterations: Option<usize>, atol: f64, rtol: f64) -> Self {
+    #[pyo3(signature = (max_iterations=Some(50), atol=0.0, rtol=0.0, sigma_z=2.0, sigma_vz=2.0, bounds=None))]
+    fn new(
+        max_iterations: Option<usize>,
+        atol: f64,
+        rtol: f64,
+        sigma_z: f64,
+        sigma_vz: f64,
+        bounds: Option<Vec<Vec<(f64, f64)>>>,
+    ) -> PyResult<Self> {
         // TikTak sampling remains an internal implementation detail until the
         // runtime parameter-layout path replaces the fixed 1-/2-component path.
         let num_samples = 4096usize;
@@ -196,39 +203,73 @@ impl PSpiralFitter {
             0.995,
         );
 
-        let alpha_bounds = (0.0, 1.0);
-        let b_bounds = (0.005, 0.1);
-        let c_bounds = (0.0, 0.004);
-        let theta0_bounds = (-std::f64::consts::PI, std::f64::consts::PI);
-        let scale_factor_bounds = (30.0, 70.0);
-        let rho_bounds = (0.0, 0.18);
+        let default_bounds = vec![
+            (0.0, 1.0),
+            (0.005, 0.1),
+            (0.0, 0.004),
+            (-std::f64::consts::PI, std::f64::consts::PI),
+            (30.0, 70.0),
+            (0.0, 0.18),
+        ];
+        let mut component_bounds = bounds.unwrap_or_else(|| vec![default_bounds.clone()]);
+        if component_bounds.is_empty() || component_bounds.len() > 2 {
+            return Err(PyValueError::new_err(
+                "bounds must contain one or two component bound sets",
+            ));
+        }
+        if component_bounds.len() == 1 {
+            component_bounds.push(component_bounds[0].clone());
+        }
+        if component_bounds.iter().any(|component| {
+            component.len() != 6
+                || component
+                    .iter()
+                    .any(|(lower, upper)| !lower.is_finite() || !upper.is_finite() || lower > upper)
+        }) {
+            return Err(PyValueError::new_err(
+                "each component must have six finite, ordered parameter bounds",
+            ));
+        }
+        let bounds_for = |component: &[(f64, f64)]| {
+            (
+                component[0],
+                component[1],
+                component[2],
+                component[3],
+                component[4],
+                component[5],
+            )
+        };
+        let single = bounds_for(&component_bounds[0]);
+        let double = bounds_for(&component_bounds[1]);
 
-        Self {
+        Ok(Self {
             inner: RustFitter {
                 fitter_single: PSpiralFitterND {
                     tiktak: tiktak1,
-                    alpha_bounds,
-                    b_bounds,
-                    c_bounds,
-                    theta0_bounds,
-                    scale_factor_bounds,
-                    rho_bounds,
+                    alpha_bounds: single.0,
+                    b_bounds: single.1,
+                    c_bounds: single.2,
+                    theta0_bounds: single.3,
+                    scale_factor_bounds: single.4,
+                    rho_bounds: single.5,
                 },
                 fitter_double: PSpiralFitterND {
                     tiktak: tiktak2,
-                    alpha_bounds,
-                    b_bounds,
-                    c_bounds,
-                    theta0_bounds,
-                    scale_factor_bounds,
-                    rho_bounds,
+                    alpha_bounds: double.0,
+                    b_bounds: double.1,
+                    c_bounds: double.2,
+                    theta0_bounds: double.3,
+                    scale_factor_bounds: double.4,
+                    rho_bounds: double.5,
                 },
                 max_iterations,
-                smoothing_sigma: 2.0,
+                sigma_z,
+                sigma_vz,
                 atol,
                 rtol,
             },
-        }
+        })
     }
 
     #[expect(
