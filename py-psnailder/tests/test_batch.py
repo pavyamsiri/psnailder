@@ -59,17 +59,39 @@ def test_rust_batch_matches_single_fits(workers: int) -> None:
         max_iterations=1,
         bounds=ParameterBounds(alpha=0.0, b=0.05, c=0.0, theta0=0.0, scale_factor=40.0, rho=0.09),
     )
-    inputs = []
+    inputs: list[FitInput] = []
     for shape, count in [((2, 3), 2), ((3, 2), 3)]:
         grid = np.full(shape, float(count))
-        inputs.append(FitInput(density=grid, background=grid, z_mesh=np.zeros(shape), vz_mesh=np.zeros(shape)))
-    unsupported = FitInput(density=grid, background=grid, z_mesh=grid, vz_mesh=grid, num_components=1)
+        inputs.append(
+            FitInput(
+                density=grid,
+                background=grid,
+                z_mesh=np.zeros(shape),
+                vz_mesh=np.zeros(shape),
+                num_components=count - 1,
+                winding=-1 if count == 2 else 1,
+                improve_background=False,
+            )
+        )
+    grid = np.ones((2, 2))
+    unsupported = FitInput(density=grid, background=grid, z_mesh=grid, vz_mesh=grid, num_components=3)
     results = fitter.fit_batch([inputs[0], unsupported, inputs[1]], workers=workers)
     assert isinstance(results[1], FitFailure)
     for item, result in zip(inputs, (results[0], results[2]), strict=True):
-        single = fitter.fit_spiral_with_background(item.density, item.background, item.z_mesh, item.vz_mesh)
+        single = fitter.fit_spiral_with_background(
+            item.density,
+            item.background,
+            item.z_mesh,
+            item.vz_mesh,
+            num_components=item.num_components,
+            winding=item.winding,
+            improve_background=item.improve_background,
+        )
         assert isinstance(single, FitSuccess)
         assert isinstance(result, FitSuccess)
+        assert result.result.final_model.num_components == item.num_components
+        assert result.result.final_model.winding == item.winding
+        np.testing.assert_array_equal(result.result.final_model.background, item.background)
         np.testing.assert_array_equal(result.result.data, item.density)
         np.testing.assert_array_equal(result.result.final_model.parameters, single.result.final_model.parameters)
         assert result.result.lnl == single.result.lnl

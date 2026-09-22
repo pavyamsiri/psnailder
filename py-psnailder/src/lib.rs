@@ -239,6 +239,24 @@ type BatchInput<'py> = (
 );
 
 impl PSpiralFitter {
+    fn validate_options(
+        num_components: Option<usize>,
+        winding: Option<i8>,
+    ) -> PyResult<Option<psnailder_core::Winding>> {
+        if num_components.is_some_and(|count| count != 1 && count != 2) {
+            return Err(PyValueError::new_err(
+                "num_components must be 1, 2, or None",
+            ));
+        }
+        winding
+            .map(|value| {
+                value
+                    .try_into()
+                    .map_err(|_| PyValueError::new_err("winding must be -1, 1, or None"))
+            })
+            .transpose()
+    }
+
     fn convert_result(
         py: Python<'_>,
         res: psnailder_fit::PSpiralFitResult,
@@ -378,6 +396,7 @@ impl PSpiralFitter {
         clippy::too_many_arguments,
         reason = "API would be overly complicated in order to reduce number of arguments."
     )]
+    #[pyo3(signature = (initial_density, initial_background, mask, mesh_x, mesh_y, shape, *, num_components=None, winding=None, improve_background=true))]
     pub fn fit_spiral_with_background<'py>(
         &self,
         py: Python<'py>,
@@ -387,36 +406,60 @@ impl PSpiralFitter {
         mesh_x: PyReadonlyArray1<'py, f64>,
         mesh_y: PyReadonlyArray1<'py, f64>,
         shape: (usize, usize),
+        num_components: Option<usize>,
+        winding: Option<i8>,
+        improve_background: bool,
     ) -> PyResult<PSpiralFitResult> {
+        let winding = Self::validate_options(num_components, winding)?;
         let initial_density = initial_density.as_slice()?;
         let initial_background = initial_background.as_slice()?;
         let mask = mask.as_slice()?;
         let mesh_x = mesh_x.as_slice()?;
         let mesh_y = mesh_y.as_slice()?;
 
-        let res = self.inner.fit_spiral_with_background(
-            initial_density,
-            initial_background,
-            mask,
-            mesh_x,
-            mesh_y,
-            shape,
-        );
+        let res = self
+            .inner
+            .fit_spiral_with_background_iterative(
+                initial_density,
+                initial_background,
+                mask,
+                mesh_x,
+                mesh_y,
+                shape,
+                num_components,
+                winding,
+                improve_background,
+            )
+            .last()
+            .ok_or_else(|| PyValueError::new_err("fit produced no checkpoints"))?;
 
         Self::convert_result(py, res, mask)
     }
 
     /// Copy a batch into Rust storage, then fit inside one shared Rayon pool.
-    #[pyo3(signature = (inputs, *, workers=None))]
+    #[pyo3(signature = (inputs, *, workers=None, options=None))]
     pub fn fit_batch(
         &self,
         py: Python<'_>,
         inputs: Vec<BatchInput<'_>>,
         workers: Option<usize>,
+        options: Option<Vec<(Option<usize>, Option<i8>, bool)>>,
     ) -> PyResult<Vec<PSpiralFitResult>> {
         if workers == Some(0) {
             return Err(PyValueError::new_err("workers must be positive"));
         }
+        let options = options.unwrap_or_else(|| vec![(None, None, true); inputs.len()]);
+        if options.len() != inputs.len() {
+            return Err(PyValueError::new_err(
+                "options must match the number of inputs",
+            ));
+        }
+        let options = options
+            .into_iter()
+            .map(|(count, winding, improve)| {
+                Ok((count, Self::validate_options(count, winding)?, improve))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         let owned = inputs
             .into_iter()
             .map(|(data, background, mask, x, y, shape)| {
@@ -457,14 +500,19 @@ impl PSpiralFitter {
             Ok::<_, PyErr>(pool.install(|| {
                 owned
                     .par_iter()
-                    .map(|(arrays, shape)| {
-                        self.inner.fit_spiral_with_background(
-                            &arrays[0], &arrays[1], &arrays[2], &arrays[3], &arrays[4], *shape,
-                        )
+                    .zip(&options)
+                    .map(|((arrays, shape), &(count, winding, improve))| {
+                        self.inner
+                            .fit_spiral_with_background_iterative(
+                                &arrays[0], &arrays[1], &arrays[2], &arrays[3], &arrays[4], *shape,
+                                count, winding, improve,
+                            )
+                            .last()
+                            .ok_or_else(|| PyValueError::new_err("fit produced no checkpoints"))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<PyResult<Vec<_>>>()
             }))
-        })?;
+        })??;
         results
             .into_iter()
             .zip(&owned)
@@ -477,6 +525,7 @@ impl PSpiralFitter {
         clippy::too_many_arguments,
         reason = "This mirrors the batch fitting API for event checkpoints."
     )]
+    #[pyo3(signature = (initial_density, initial_background, mask, mesh_x, mesh_y, shape, *, num_components=None, winding=None, improve_background=true))]
     pub fn fit_spiral_with_background_events(
         &self,
         initial_density: PyReadonlyArray1<'_, f64>,
@@ -485,7 +534,11 @@ impl PSpiralFitter {
         mesh_x: PyReadonlyArray1<'_, f64>,
         mesh_y: PyReadonlyArray1<'_, f64>,
         shape: (usize, usize),
+        num_components: Option<usize>,
+        winding: Option<i8>,
+        improve_background: bool,
     ) -> PyResult<PSpiralFitIterator> {
+        let winding = Self::validate_options(num_components, winding)?;
         let initial_density = initial_density.as_slice()?;
         let initial_background = initial_background.as_slice()?;
         let mask = mask.as_slice()?;
@@ -498,9 +551,9 @@ impl PSpiralFitter {
             mesh_x,
             mesh_y,
             shape,
-            None,
-            None,
-            true,
+            num_components,
+            winding,
+            improve_background,
         );
         Ok(PSpiralFitIterator {
             inner: Some(results),

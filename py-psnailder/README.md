@@ -84,7 +84,10 @@ else:
 
 `num_components=None` compares one- and two-component initial fits using BIC,
 counting free parameters. `winding=None` tries both directions. The selected count
-and winding stay fixed during background refinement.
+and winding stay fixed during background refinement. Both backends accept
+`num_components=1` or `2` and `winding=-1` or `1` to skip those selections.
+Pass `improve_background=False` to keep the supplied background fixed. These
+controls also apply to event streams and individual inputs in a batch.
 
 `FitSuccess` means a valid fit exists, not that optimization or refinement
 necessarily converged. Inspect `result.reason`: `fixed_background`,

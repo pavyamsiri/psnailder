@@ -233,7 +233,14 @@ class RustFitBackend(FitBackend):
             )
             indices.append(index)
         if inputs:
-            native_results = self._rust_fitter.fit_batch(inputs, workers=workers)
+            native_results = self._rust_fitter.fit_batch(
+                inputs,
+                workers=workers,
+                options=[
+                    (requests[index].num_components, requests[index].winding, requests[index].improve_background)
+                    for index in indices
+                ],
+            )
             for index, result in zip(indices, native_results, strict=True):
                 outcomes[index] = FitSuccess(
                     result=self._convert_result(result, requests[index]),
@@ -261,6 +268,9 @@ class RustFitBackend(FitBackend):
             z_mesh.flatten(),
             vz_mesh.flatten(),
             shape=shape,
+            num_components=request.num_components,
+            winding=request.winding,
+            improve_background=request.improve_background,
         )
         return FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics(res))
 
@@ -286,6 +296,9 @@ class RustFitBackend(FitBackend):
             z_mesh.flatten(),
             vz_mesh.flatten(),
             shape=shape,
+            num_components=request.num_components,
+            winding=request.winding,
+            improve_background=request.improve_background,
         )
         for checkpoint in checkpoints:
             result = RustFitBackend._convert_result(checkpoint, request)
@@ -302,10 +315,8 @@ class RustFitBackend(FitBackend):
 
     def _unsupported_reason(self, request: FitRequest) -> str | None:
         checks = (
-            (request.num_components is not None, "Rust backend currently performs automatic component selection only."),
-            (request.winding is not None, "Rust backend currently selects winding automatically only."),
+            (request.num_components not in (None, 1, 2), "Rust backend supports one or two components only."),
             (request.warm_start is not None, "Rust backend does not yet support warm starts."),
-            (not request.improve_background, "Rust binding does not yet expose fixed-background fitting."),
         )
         return next((message for condition, message in checks if condition), None)
 
@@ -317,6 +328,8 @@ class RustFitBackend(FitBackend):
         initial_model = RustFitBackend._convert_model(rust_result.initial_model, request, initial_background)
         final_model = RustFitBackend._convert_model(rust_result.final_model, request, final_background)
         reason = FitTerminationReason.CONVERGED if rust_result.converged else FitTerminationReason.ITERATION_LIMIT
+        if not request.improve_background:
+            reason = FitTerminationReason.FIXED_BACKGROUND
         return PSpiralFitResult(
             initial_model=initial_model,
             final_model=final_model,

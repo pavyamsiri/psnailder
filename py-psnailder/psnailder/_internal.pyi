@@ -65,6 +65,7 @@ class PSpiralFitter:
         ],
         *,
         workers: int | None = None,
+        options: Sequence[tuple[int | None, int | None, bool]] | None = None,
     ) -> list[PSpiralFitResult]: ...
     def fit_spiral_with_background(
         self,
@@ -74,6 +75,10 @@ class PSpiralFitter:
         mesh_x: onp.Array1D[np.float64],
         mesh_y: onp.Array1D[np.float64],
         shape: tuple[int, int],
+        *,
+        num_components: int | None = None,
+        winding: int | None = None,
+        improve_background: bool = True,
     ) -> PSpiralFitResult: ...
     def fit_spiral_with_background_events(
         self,
@@ -83,6 +88,10 @@ class PSpiralFitter:
         mesh_x: onp.Array1D[np.float64],
         mesh_y: onp.Array1D[np.float64],
         shape: tuple[int, int],
+        *,
+        num_components: int | None = None,
+        winding: int | None = None,
+        improve_background: bool = True,
     ) -> PSpiralFitIterator: ...
 
 class PSpiralFitIterator:

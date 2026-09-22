@@ -767,3 +767,33 @@ def test_normalized_two_arm_amplitude_recovery(background_scale: float) -> None:
     assert result.lnl == pytest.approx(0.0, abs=1e-7)  # pyright: ignore[reportUnknownMemberType]
     np.testing.assert_array_equal(supplied_background, original_background)
     assert result.final_model.background.sum() < data.sum()  # pyright: ignore[reportAny]
+
+
+@pytest.mark.parametrize("num_components", [None, 1, 2])
+@pytest.mark.parametrize("winding", [-1, 1])
+def test_rust_fixed_controls(num_components: int | None, winding: Literal[-1, 1]) -> None:
+    fitter = PSpiralFitter(
+        backend="rust",
+        max_iterations=3,
+        bounds=ParameterBounds(alpha=0.0, b=0.05, c=0.0, theta0=0.0, scale_factor=40.0, rho=0.09),
+    )
+    background = np.arange(1.0, 7.0).reshape(2, 3)
+    mesh = np.zeros_like(background)
+    events = list(
+        fitter.fit_spiral_with_background_gen(
+            background,
+            background,
+            mesh,
+            mesh,
+            num_components=num_components,
+            winding=winding,
+            improve_background=False,
+        )
+    )
+    assert len(events) == 1
+    result = events[0]
+    assert isinstance(result, FitSuccess)
+    assert result.result.final_model.num_components == (num_components or 1)
+    assert result.result.final_model.winding == winding
+    assert result.result.reason == FitTerminationReason.FIXED_BACKGROUND
+    np.testing.assert_array_equal(result.result.final_model.background, background)

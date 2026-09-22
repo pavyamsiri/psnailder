@@ -250,6 +250,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parameter_counts_follow_each_fitters_bounds() {
+        let mut single = fixed_signal_fitter::<6>();
+        let mut double = fixed_signal_fitter::<12>();
+        assert_eq!(single.num_free_parameters(), 0);
+        assert_eq!(double.num_free_parameters(), 0);
+        single.b_bounds = (0.01, 0.1);
+        double.rho_bounds = (0.01, 0.2);
+        double.theta0_bounds = (0.0, 1.0);
+        assert_eq!(single.num_free_parameters(), 1);
+        assert_eq!(double.num_free_parameters(), 4);
+        for bounds in [
+            &mut single.alpha_bounds,
+            &mut single.c_bounds,
+            &mut single.theta0_bounds,
+            &mut single.scale_factor_bounds,
+            &mut single.rho_bounds,
+        ] {
+            bounds.1 = bounds.0 + 1.0;
+        }
+        assert_eq!(single.num_free_parameters(), 6);
+        double = PSpiralFitterND {
+            tiktak: TikTak::new(1, 0.25, 0.1, 0.995),
+            alpha_bounds: single.alpha_bounds,
+            b_bounds: single.b_bounds,
+            c_bounds: single.c_bounds,
+            theta0_bounds: single.theta0_bounds,
+            scale_factor_bounds: single.scale_factor_bounds,
+            rho_bounds: single.rho_bounds,
+        };
+        assert_eq!(double.num_free_parameters(), 12);
+    }
+
+    #[test]
+    fn bic_prefers_fewer_free_parameters_and_single_on_ties() {
+        let mut fitter = refinement_fitter(1, 0.0, 0.0);
+        // Zero amplitude makes both likelihoods identical even when b is free.
+        for (bounds, expected) in [((0.01, 0.1), 2), ((0.05, 0.05), 1)] {
+            fitter.fitter_single.b_bounds = bounds;
+            let iter = fitter.fit_spiral_with_background_iterative(
+                &[2.0; 4],
+                &[2.0; 4],
+                &[1.0; 4],
+                &[0.1; 4],
+                &[0.1; 4],
+                (2, 2),
+                None,
+                Some(Winding::Positive),
+                false,
+            );
+            assert_eq!(iter.num_components, expected);
+        }
+    }
+
     fn assert_consistent_result(result: &PSpiralFitResult, coordinates: &[f64], mask: &[f64]) {
         for (model, background, score) in [
             (
@@ -733,6 +787,34 @@ impl<const N: usize> Clone for PSpiralFitterND<N> {
 type OneArmFitter = PSpiralFitterND<6>;
 type TwoArmFitter = PSpiralFitterND<12>;
 
+impl<const N: usize> PSpiralFitterND<N> {
+    /// Count free parameters using the bounds repeated for each fitted arm.
+    fn num_free_parameters(&self) -> usize {
+        let bounds: Vec<_> = [
+            self.alpha_bounds,
+            self.b_bounds,
+            self.c_bounds,
+            self.theta0_bounds,
+            self.scale_factor_bounds,
+            self.rho_bounds,
+        ]
+        .into_iter()
+        .cycle()
+        .take(N)
+        .map(|(lower, upper)| {
+            if lower == upper {
+                ParameterBound::Fixed(lower)
+            } else {
+                ParameterBound::Interval { lower, upper }
+            }
+        })
+        .collect();
+        ParameterLayout::from_bounds(&bounds)
+            .expect("fitter bounds must be finite and ordered")
+            .free_len()
+    }
+}
+
 /// A high-level fitter that supports single and double component models with iterative background refinement.
 #[derive(Clone)]
 pub struct PSpiralFitter {
@@ -1061,25 +1143,51 @@ impl PSpiralFitter {
         improve_background: bool,
     ) -> PSpiralFitterIterative {
         let actual_num_components = num_components.unwrap_or_else(|| {
-            // AIC comparison
-            let (_, ll_single, _) = self.fitter_single.fit_spiral_with_background(
-                initial_density,
-                initial_background,
-                mask,
-                mesh_x,
-                mesh_y,
-            );
-            let (_, _, ll_double, _) = self.fitter_double.fit_spiral_with_background(
-                initial_density,
-                initial_background,
-                mask,
-                mesh_x,
-                mesh_y,
-            );
+            // BIC comparison penalizes only parameters that remain free.
+            let (_, ll_single, _) = match winding {
+                Some(winding) => self.fitter_single.fit_spiral_with_background_with_winding(
+                    initial_density,
+                    initial_background,
+                    mask,
+                    mesh_x,
+                    mesh_y,
+                    winding,
+                ),
+                None => self.fitter_single.fit_spiral_with_background(
+                    initial_density,
+                    initial_background,
+                    mask,
+                    mesh_x,
+                    mesh_y,
+                ),
+            };
+            let (_, _, ll_double, _) = match winding {
+                Some(winding) => self.fitter_double.fit_spiral_with_background_with_winding(
+                    initial_density,
+                    initial_background,
+                    mask,
+                    mesh_x,
+                    mesh_y,
+                    winding,
+                ),
+                None => self.fitter_double.fit_spiral_with_background(
+                    initial_density,
+                    initial_background,
+                    mask,
+                    mesh_x,
+                    mesh_y,
+                ),
+            };
 
             let ln_norm = initial_density.iter().sum::<f64>().ln();
-            let bic_single = ln_norm.mul_add(6.0, -2.0 * ll_single);
-            let bic_double = ln_norm.mul_add(12.0, -2.0 * ll_double);
+            let bic_single = ln_norm.mul_add(
+                self.fitter_single.num_free_parameters() as f64,
+                -2.0 * ll_single,
+            );
+            let bic_double = ln_norm.mul_add(
+                self.fitter_double.num_free_parameters() as f64,
+                -2.0 * ll_double,
+            );
 
             if bic_double < bic_single { 2 } else { 1 }
         });
