@@ -775,6 +775,10 @@ pub struct PSpiralFitResult {
     pub initial_lnl: f64,
     /// The log-likelihood of the final fit.
     pub final_lnl: f64,
+    /// Total objective evaluations used by optimization attempts.
+    pub nfev: u64,
+    /// Number of background refinement attempts performed.
+    pub nit: u64,
 }
 
 /// An iterator that performs the fitting process step-by-step.
@@ -827,6 +831,8 @@ pub struct PSpiralFitterIterative<'fit> {
     pub improve_background: bool,
     /// Whether the refinement process has terminated.
     pub is_finished: bool,
+    /// Total objective evaluations across optimization attempts.
+    pub total_nfev: u64,
 }
 
 impl Iterator for PSpiralFitterIterative<'_> {
@@ -850,10 +856,10 @@ impl Iterator for PSpiralFitterIterative<'_> {
         self.iteration_index += 1;
 
         // Optimize parameters.
-        let (current_model, ll) = match self.num_components {
+        let (current_model, ll, nfev) = match self.num_components {
             1 => {
                 // Use the winding from a previous iteration or the given one.
-                let (comp, ll) = if let Some(w) = self.best_winding {
+                let (comp, ll, nfev) = if let Some(w) = self.best_winding {
                     self.fitter
                         .fitter_single
                         .fit_spiral_with_background_with_winding(
@@ -867,7 +873,7 @@ impl Iterator for PSpiralFitterIterative<'_> {
                 }
                 // Determine the best winding by performing both fits.
                 else {
-                    let (comp, ll) = self.fitter.fitter_single.fit_spiral_with_background(
+                    let (comp, ll, nfev) = self.fitter.fitter_single.fit_spiral_with_background(
                         &self.initial_density,
                         &self.current_background,
                         &self.mask,
@@ -875,18 +881,19 @@ impl Iterator for PSpiralFitterIterative<'_> {
                         &self.mesh_y,
                     );
                     self.best_winding = Some(comp.winding);
-                    (comp, ll)
+                    (comp, ll, nfev)
                 };
                 (
                     PSpiralModel {
                         components: vec![comp],
                     },
                     ll,
+                    nfev,
                 )
             }
             2 => {
                 // Use the winding from a previous iteration or the given one.
-                let (comp1, comp2, ll) = if let Some(w) = self.best_winding {
+                let (comp1, comp2, ll, nfev) = if let Some(w) = self.best_winding {
                     self.fitter
                         .fitter_double
                         .fit_spiral_with_background_with_winding(
@@ -900,7 +907,7 @@ impl Iterator for PSpiralFitterIterative<'_> {
                 }
                 // Determine the best winding by performing both fits.
                 else {
-                    let (c1, c2, ll) = self.fitter.fitter_double.fit_spiral_with_background(
+                    let (c1, c2, ll, nfev) = self.fitter.fitter_double.fit_spiral_with_background(
                         &self.initial_density,
                         &self.current_background,
                         &self.mask,
@@ -908,17 +915,19 @@ impl Iterator for PSpiralFitterIterative<'_> {
                         &self.mesh_y,
                     );
                     self.best_winding = Some(c1.winding);
-                    (c1, c2, ll)
+                    (c1, c2, ll, nfev)
                 };
                 (
                     PSpiralModel {
                         components: vec![comp1, comp2],
                     },
                     ll,
+                    nfev,
                 )
             }
             _ => panic!("Unsupported `num_components`"),
         };
+        self.total_nfev += nfev;
 
         // Set initial model if this is the first iteration.
         if self.initial_model.is_none() {
@@ -943,6 +952,8 @@ impl Iterator for PSpiralFitterIterative<'_> {
                 converged: self.converged,
                 initial_lnl: self.initial_quality,
                 final_lnl: self.best_quality,
+                nfev: self.total_nfev,
+                nit: self.iteration_index as u64,
             });
         }
 
@@ -1012,6 +1023,8 @@ impl Iterator for PSpiralFitterIterative<'_> {
                 converged: self.converged,
                 initial_lnl: self.initial_quality,
                 final_lnl: self.best_quality,
+                nfev: self.total_nfev,
+                nit: self.iteration_index as u64,
             });
         }
 
@@ -1031,6 +1044,8 @@ impl Iterator for PSpiralFitterIterative<'_> {
             converged: self.converged,
             initial_lnl: self.initial_quality,
             final_lnl: self.best_quality,
+            nfev: self.total_nfev,
+            nit: self.iteration_index as u64,
         })
     }
 }
@@ -1063,14 +1078,14 @@ impl PSpiralFitter {
     ) -> PSpiralFitterIterative<'fit> {
         let actual_num_components = num_components.unwrap_or_else(|| {
             // AIC comparison
-            let (_, ll_single) = self.fitter_single.fit_spiral_with_background(
+            let (_, ll_single, _) = self.fitter_single.fit_spiral_with_background(
                 initial_density,
                 initial_background,
                 mask,
                 mesh_x,
                 mesh_y,
             );
-            let (_, _, ll_double) = self.fitter_double.fit_spiral_with_background(
+            let (_, _, ll_double, _) = self.fitter_double.fit_spiral_with_background(
                 initial_density,
                 initial_background,
                 mask,
@@ -1109,6 +1124,7 @@ impl PSpiralFitter {
             rtol: self.rtol,
             improve_background,
             is_finished: false,
+            total_nfev: 0,
         }
     }
 
@@ -1153,7 +1169,7 @@ impl PSpiralFitterND<6> {
         mask: &[f64],
         mesh_x: &[f64],
         mesh_y: &[f64],
-    ) -> (PSpiralComponent, f64) {
+    ) -> (PSpiralComponent, f64, u64) {
         let pos_winding = self.fit_spiral_with_background_with_winding(
             initial_density,
             initial_background,
@@ -1172,9 +1188,9 @@ impl PSpiralFitterND<6> {
         );
 
         if pos_winding.1 >= neg_winding.1 {
-            pos_winding
+            (pos_winding.0, pos_winding.1, pos_winding.2 + neg_winding.2)
         } else {
-            neg_winding
+            (neg_winding.0, neg_winding.1, pos_winding.2 + neg_winding.2)
         }
     }
 
@@ -1188,7 +1204,7 @@ impl PSpiralFitterND<6> {
         mesh_x: &[f64],
         mesh_y: &[f64],
         winding: Winding,
-    ) -> (PSpiralComponent, f64) {
+    ) -> (PSpiralComponent, f64, u64) {
         let lb = vec![
             self.alpha_bounds.0,
             self.b_bounds.0,
@@ -1240,7 +1256,7 @@ impl PSpiralFitterND<6> {
             flattening_strength: 0.1,
         };
 
-        (best_model, -res.cost)
+        (best_model, -res.cost, res.nfev)
     }
 }
 
@@ -1254,7 +1270,7 @@ impl PSpiralFitterND<12> {
         mask: &[f64],
         mesh_x: &[f64],
         mesh_y: &[f64],
-    ) -> (PSpiralComponent, PSpiralComponent, f64) {
+    ) -> (PSpiralComponent, PSpiralComponent, f64, u64) {
         let pos_winding = self.fit_spiral_with_background_with_winding(
             initial_density,
             initial_background,
@@ -1273,9 +1289,19 @@ impl PSpiralFitterND<12> {
         );
 
         if pos_winding.2 >= neg_winding.2 {
-            pos_winding
+            (
+                pos_winding.0,
+                pos_winding.1,
+                pos_winding.2,
+                pos_winding.3 + neg_winding.3,
+            )
         } else {
-            neg_winding
+            (
+                neg_winding.0,
+                neg_winding.1,
+                neg_winding.2,
+                pos_winding.3 + neg_winding.3,
+            )
         }
     }
 
@@ -1289,7 +1315,7 @@ impl PSpiralFitterND<12> {
         mesh_x: &[f64],
         mesh_y: &[f64],
         winding: Winding,
-    ) -> (PSpiralComponent, PSpiralComponent, f64) {
+    ) -> (PSpiralComponent, PSpiralComponent, f64, u64) {
         let lb = vec![
             self.alpha_bounds.0,
             self.b_bounds.0,
@@ -1369,7 +1395,7 @@ impl PSpiralFitterND<12> {
             flattening_strength: 0.1,
         };
 
-        (comp1, comp2, -res.cost)
+        (comp1, comp2, -res.cost, res.nfev)
     }
 }
 

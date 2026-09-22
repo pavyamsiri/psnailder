@@ -200,7 +200,7 @@ class RustFitBackend(FitBackend):
             vz_mesh.flatten(),
             shape=shape,
         )
-        return FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics())
+        return FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics(res))
 
     @override
     def fit_events(self, request: FitRequest) -> Iterator[BackendEvent]:
@@ -215,10 +215,6 @@ class RustFitBackend(FitBackend):
         mask = self._mask_func(z_mesh, vz_mesh)
         initial_density = request.initial_density
         shape = initial_density.shape
-        seed: int | None = request.rng.integers(low=0, high=2**64 - 1, size=1)[0] if request.rng is not None else None
-
-        # TODO: Use seed
-        _ = seed
 
         res = self._rust_fitter.fit_spiral_with_background(
             initial_density.flatten(),
@@ -228,7 +224,7 @@ class RustFitBackend(FitBackend):
             vz_mesh.flatten(),
             shape=shape,
         )
-        yield FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics())
+        yield FitSuccess(result=RustFitBackend._convert_result(res, request), diagnostics=RustFitBackend._rust_diagnostics(res))
 
     def _unsupported_reason(self, request: FitRequest) -> str | None:
         checks = (
@@ -275,12 +271,12 @@ class RustFitBackend(FitBackend):
         return PSpiralModel(parameters, request.z_mesh, request.vz_mesh, background, winding=winding)
 
     @staticmethod
-    def _rust_diagnostics() -> OptimizationDiagnostics:
+    def _rust_diagnostics(rust_result: _RustFitResult) -> OptimizationDiagnostics:
         return OptimizationDiagnostics(
-            message="Rust optimizer diagnostics are not exposed by the current binding.",
+            message="Rust TikTak/Nelder-Mead optimization completed.",
             success=True,
-            nfev=0,
-            nit=0,
+            nfev=rust_result.nfev,
+            nit=rust_result.nit,
         )
 
     @staticmethod

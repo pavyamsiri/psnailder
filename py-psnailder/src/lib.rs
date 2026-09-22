@@ -158,6 +158,10 @@ pub struct PSpiralFitResult {
     pub initial_pvalue: f64,
     #[pyo3(get)]
     pub final_pvalue: f64,
+    #[pyo3(get)]
+    pub nfev: u64,
+    #[pyo3(get)]
+    pub nit: u64,
 }
 
 #[pymethods]
@@ -328,6 +332,8 @@ impl PSpiralFitter {
             lnl: res.final_lnl,
             initial_pvalue,
             final_pvalue,
+            nfev: res.nfev,
+            nit: res.nit,
         })
     }
 }
