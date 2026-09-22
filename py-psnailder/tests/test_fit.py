@@ -13,6 +13,7 @@ import pytest
 from scipy.optimize import Bounds, OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
+from psnailder._python_backend import PythonFitBackend
 from psnailder.fit import (
     FitFailure,
     FitFailureReason,
@@ -23,6 +24,7 @@ from psnailder.fit import (
     OptimizationResult,
     ParameterBounds,
     PSpiralFitter,
+    create_sigmoid_mask,
 )
 from psnailder.model import PSpiralModel
 
@@ -154,7 +156,7 @@ def test_background_refinement_result_consistency(
         _ = vz
         return mask
 
-    monkeypatch.setattr(PSpiralFitter, "_optimize_parameters", optimize_parameters)
+    monkeypatch.setattr(PythonFitBackend, "_optimize_parameters", optimize_parameters)
     fitter = PSpiralFitter(
         # Rejection cases stop before their budget; the acceptance-only case
         # uses its entire budget. Fixed-background fitting must skip smoothing.
@@ -226,7 +228,7 @@ def test_refinement_tolerance(atol: float, rtol: float, converges: bool, proposa
         mask_func=lambda z, _vz: np.ones_like(z),
     )
     optimizer_result = OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="Converged")
-    with patch.object(fitter, "_optimize_parameters", return_value=optimizer_result) as optimizer:
+    with patch.object(fitter._backend, "_optimize_parameters", return_value=optimizer_result) as optimizer:  # noqa: SLF001
         events = list(fitter.fit_spiral_with_background_gen(data, background, mesh, mesh, num_components=1, winding=1))
     outcome = events[-1]
     assert isinstance(outcome, FitSuccess)
@@ -255,7 +257,7 @@ def test_invalid_mask_rejected_before_optimizer(kind: str) -> None:
         else np.full_like(grid, {"nan": np.nan, "negative": -1.0, "zero": 0.0, "inf": np.inf}.get(kind, 1.0))
     )
     fitter = PSpiralFitter(mask_func=lambda _z, _vz: mask)
-    with patch.object(fitter, "_optimize_parameters") as optimizer, pytest.raises(ValueError, match="mask_func"):
+    with patch.object(fitter._backend, "_optimize_parameters") as optimizer, pytest.raises(ValueError, match="mask_func"):  # noqa: SLF001
         _ = list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid))
     optimizer.assert_not_called()
 
@@ -275,7 +277,7 @@ def test_invalid_smoother_output(kind: str) -> None:
     fitter = PSpiralFitter(smoothing_func=lambda _arr: proposal)
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
     with patch.object(
-        fitter,
+        fitter._backend,  # noqa: SLF001
         "_optimize_parameters",
         return_value=OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="ok"),
     ) as optimizer:
@@ -368,7 +370,8 @@ def test_gaussian_fit_improvement_opt_prob(seed: int) -> None:
     assert isinstance(outcome, FitSuccess)
     res = outcome.result
 
-    assert res.final_model.pvalue(res.data, fitter.mask_func(res.final_model.z_mesh, res.final_model.vz_mesh)) > 0.05
+    mask = create_sigmoid_mask(1.0, 40.0)(res.final_model.z_mesh, res.final_model.vz_mesh)
+    assert res.final_model.pvalue(res.data, mask) > 0.05
 
 
 @pytest.mark.parametrize("converged", [False, True])
@@ -415,7 +418,9 @@ def test_winding_selection_retains_finite_candidate(positive_valid: bool, invali
     grid = np.ones((2, 2))
     valid = OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="Converged")
     failed = OptimizationResult(parameters=parameters, cost=invalid, success=False, nfev=20, nit=3, message="Failed")
-    with patch.object(PSpiralFitter, "_optimize_parameters", side_effect=[valid, failed] if positive_valid else [failed, valid]):
+    with patch.object(
+        PythonFitBackend, "_optimize_parameters", side_effect=[valid, failed] if positive_valid else [failed, valid]
+    ):
         outcome = PSpiralFitter().fit_spiral_with_background(
             grid,
             grid,
@@ -464,7 +469,7 @@ def test_component_selection_retains_success(successful_count: int | None, impro
             message=f"Attempt {calls}",
         )
 
-    with patch.object(fitter, "_optimize_parameters", side_effect=optimize):
+    with patch.object(fitter._backend, "_optimize_parameters", side_effect=optimize):  # noqa: SLF001
         events = list(fitter.fit_spiral_with_background_gen(grid, grid, grid, grid, winding=-1, improve_background=improve))
     assert len(events) == (2 if improve and successful_count is not None else 1)
     assert all(isinstance(event, FitProgress) for event in events[:-1])
@@ -497,7 +502,7 @@ def test_invalid_background_retains_valid_fit(accepted_first: bool) -> None:
     fitter = PSpiralFitter(max_iterations=3, smoothing_func=lambda _arr: next(proposals))
     scores = [1.0, 0.0] if accepted_first else [1.0]
     with patch.object(
-        fitter,
+        fitter._backend,  # noqa: SLF001
         "_optimize_parameters",
         side_effect=[
             OptimizationResult(parameters=parameters, cost=s, success=True, nfev=10, nit=2, message="Converged") for s in scores
@@ -517,7 +522,7 @@ def test_zero_refinement_budget_retains_initial_fit() -> None:
     grid = np.ones((2, 2))
     parameters = np.array([0.0, 0.05, 0.002, 0.0, 40.0, 0.09])
     with patch.object(
-        PSpiralFitter,
+        PythonFitBackend,
         "_optimize_parameters",
         return_value=OptimizationResult(parameters=parameters, cost=0.0, success=True, nfev=10, nit=2, message="Converged"),
     ) as optimizer:
@@ -579,8 +584,8 @@ def test_selection_only_happens_once(
 
     fitter = PSpiralFitter(max_iterations=1, smoothing_func=lambda arr: arr.copy(), mask_func=mask)
     with (
-        patch.object(fitter, "_optimize_parameters", side_effect=optimize) as optimizer,
-        patch.object(fitter, "_mask_func", wraps=mask) as mask_factory,
+        patch.object(fitter._backend, "_optimize_parameters", side_effect=optimize) as optimizer,  # noqa: SLF001
+        patch.object(fitter._backend, "_mask_func", wraps=mask) as mask_factory,  # noqa: SLF001
     ):
         events = list(
             fitter.fit_spiral_with_background_gen(

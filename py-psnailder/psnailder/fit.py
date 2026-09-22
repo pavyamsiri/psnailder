@@ -2,19 +2,33 @@
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from scipy import ndimage, optimize, special
+from scipy import optimize  # noqa: F401 -- retained as a compatibility patch target for callers/tests.
 
+from psnailder._backends import FitBackend, FitRequest
+from psnailder._python_backend import PythonFitBackend
+
+from ._backends import (
+    BackendEvent,
+    BackendResult,
+    FitFailure,
+    FitFailureReason,
+    FitProgress,
+    FitSuccess,
+    FitTerminationReason,
+    GaussianSmoothConfig,
+    MaskConfig,
+    OptimizationDiagnostics,
+    OptimizationResult,
+    PSpiralFitResult,
+    SigmoidMaskConfig,
+    SmoothConfig,
+)
 from ._background_utils import generate_initial_background
-from ._likelihood_utils import ln_likelihood
+from ._python_backend import create_gaussian_smoother, create_sigmoid_mask
 from .bounds import Fixed, Interval, ParameterBounds
-from .model import PSpiralModel
-from .param_layout import ParameterLayout
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
@@ -22,13 +36,10 @@ if TYPE_CHECKING:
     from optype import numpy as onp
 
 
-type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], onp.ToFloat]
 type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], onp.Array2D[np.float64]]
 
-log: Final[logging.Logger] = logging.getLogger(__name__)
-
-__all__: Final[list[str]] = [
+__all__: list[str] = [
     "FitEvent",
     "FitFailure",
     "FitFailureReason",
@@ -37,278 +48,22 @@ __all__: Final[list[str]] = [
     "FitSuccess",
     "FitTerminationReason",
     "Fixed",
+    "GaussianSmoothConfig",
     "Interval",
+    "MaskConfig",
     "OptimizationDiagnostics",
+    "OptimizationResult",
     "PSpiralFitResult",
     "PSpiralFitter",
     "ParameterBounds",
+    "SigmoidMaskConfig",
+    "SmoothConfig",
     "create_gaussian_smoother",
     "create_sigmoid_mask",
 ]
 
-
-class FitTerminationReason(StrEnum):
-    """The reason background refinement terminated.
-
-    Variants
-    --------
-    NO_IMPROVEMENT
-        Refinement stopped when background no longer improves i.e. background has converged.
-    CONVERGED
-        A positive improvement was accepted but did not exceed the refinement tolerance.
-    ITERATION_LIMIT
-        The refinement iteration limit was reached.
-    FIXED_BACKGROUND
-        The user has asked for no background refinement.
-    INVALID_BACKGROUND_UPDATE
-        The updated background is invalid in some way and refinement can no longer proceed.
-    FAILED_REOPTIMIZATION
-        Re-optimization failed; the previously accepted fit was retained.
-
-    """
-
-    NO_IMPROVEMENT = "no_improvement"
-    CONVERGED = "converged"
-    ITERATION_LIMIT = "iteration_limit"
-    FIXED_BACKGROUND = "fixed_background"
-    INVALID_BACKGROUND_UPDATE = "invalid_background_update"
-    FAILED_REOPTIMIZATION = "failed_reoptimization"
-
-
-class FitFailureReason(StrEnum):
-    """The reason model optimisation failed.
-
-    Variants
-    --------
-    NO_VALID_CANDIDATE
-        There was no valid candidate found when optimizing.
-    OPTIMIZER_FAILED
-        The optimizer failed on its input.
-
-    """
-
-    NO_VALID_CANDIDATE = "no_valid_candidate"
-    OPTIMIZER_FAILED = "optimizer_failed"
-
-
-@dataclass(frozen=True)
-class FitSuccess:
-    """An outcome containing a valid fit, not a guarantee of convergence.
-
-    Inspect result.reason to distinguish an iteration limit, lack of improvement,
-    or retention of a valid fit after a failed refinement attempt.
-
-    Attributes
-    ----------
-    result : PSpiralFitResult
-        The successful result.
-    diagnostics : OptimizationDiagnostics
-        The overall diagnostics of all optimization attempts, including rejected fits.
-
-    """
-
-    result: PSpiralFitResult
-    diagnostics: OptimizationDiagnostics
-
-
-@dataclass(frozen=True)
-class FitFailure:
-    """A terminal outcome indicating that no valid fit was obtained.
-
-    This outcome has no model or result payload. Invalid caller configuration
-    can still raise exceptions; FitFailure represents an unsuccessful fit.
-
-    Attributes
-    ----------
-    reason : FitFailureReason
-        The reason for failure.
-    message : str
-        An accompanying message.
-    diagnostics : OptimizationDiagnostics
-        The overall diagnostics of all optimizations up to failure.
-
-    """
-
-    reason: FitFailureReason
-    message: str
-    diagnostics: OptimizationDiagnostics
-
-
-@dataclass(frozen=True)
-class FitProgress:
-    """A valid intermediate fit.
-
-    Attributes
-    ----------
-    model : PSpiralModel
-        The current valid model.
-    iteration : int
-        The refinement step; zero denotes the initial fit.
-    lnl : float
-        The score of model.prediction() against the data and fitting mask.
-    diagnostics : OptimizationDiagnostics
-        Work for this step. At iteration zero this includes component and winding selection.
-
-    Notes
-    -----
-    Only accepted fits are emitted. A rejected attempt may increase the final
-    result's iteration count without producing another progress event. Treat
-    models and their arrays as read-only while consuming the stream.
-
-    """
-
-    model: PSpiralModel
-    iteration: int
-    lnl: float
-    diagnostics: OptimizationDiagnostics
-
-
-@dataclass
-class PSpiralFitResult:
-    """A result of the spiral fitting process.
-
-    Attributes
-    ----------
-    initial_model : PSpiralModel
-        The selected initial fixed-background fit, after component-count and
-        winding selection. This is not the caller's warm-start guess.
-    final_model : PSpiralModel
-        The best fit model.
-    data : Array2D[f64]
-        The data.
-    num_iterations : int
-        The number of background refinement attempts, excluding the initial fit.
-    max_iterations : int | None
-        The maximum number of background refinement attempts, or None for no limit.
-    lnl : float
-        The score of final_model.prediction() against data and the fitting mask.
-    reason : FitTerminationReason
-        The reason fitting stopped.
-
-    """
-
-    initial_model: PSpiralModel
-    final_model: PSpiralModel
-    data: onp.Array2D[np.float64]
-    num_iterations: int
-    max_iterations: int | None
-    lnl: float
-    reason: FitTerminationReason
-
-
-type FitOutcome = FitSuccess | FitFailure
-type FitEvent = FitProgress | FitSuccess | FitFailure
-
-
-def create_gaussian_smoother(sigma: float) -> _SmoothingFunc:
-    """Return a function that applies Gaussian smoothing to a 2D array.
-
-    Parameters
-    ----------
-    sigma : float
-        The smoothing width in units of pixels (for each axis).
-
-    Returns
-    -------
-    func : Callable[[Array2D[f64]], Array2D[f64]]
-        The Gaussian smoothing function.
-
-    """
-
-    def _func(arr: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-        return ndimage.gaussian_filter(arr, sigma=sigma)
-
-    return _func
-
-
-def create_sigmoid_mask(z_scale: float, vz_scale: float) -> _MaskFunc:
-    """Return a function that creates a sigmoid mask given a mesh over z and vz.
-
-    The mask is parameterised by the scale length and scale velocity.
-
-    Parameters
-    ----------
-    z_scale : float
-        The scale length.
-    vz_scale : float
-        The scale velocity.
-
-    Returns
-    -------
-    func : Callable[[Array2D[f64], Array2D[f64]], Array2D[f64]]
-        The sigmoid mask function.
-
-    """
-
-    def _func(z_mesh: onp.Array2D[np.float64], vz_mesh: onp.Array2D[np.float64]) -> onp.Array2D[np.float64]:
-        return -special.expit(np.square(z_mesh / z_scale) + np.square(vz_mesh / vz_scale) - 1.0) + 1.0
-
-    return _func
-
-
-@dataclass(frozen=True)
-class OptimizationResult:
-    """The parameter optimization result.
-
-    Attributes
-    ----------
-    parameters : Array1D[f64]
-        The optimized (free) parameters.
-    cost : float
-        The minimized cost.
-    success : bool
-        Whether optimization was successful.
-    nfev : int
-        The number of function evaluations done during optimization.
-    nit : int
-        The number of optimization iterations.
-
-    """
-
-    parameters: onp.Array1D[np.float64]
-    cost: float
-    success: bool
-    nfev: int
-    nit: int
-    message: str
-
-    @property
-    def diagnostics(self) -> OptimizationDiagnostics:
-        return OptimizationDiagnostics(message=self.message, success=self.success, nfev=self.nfev, nit=self.nit)
-
-
-@dataclass(frozen=True)
-class OptimizationDiagnostics:
-    """The parameter optimization's diagnostics.
-
-    Attributes
-    ----------
-    message : str
-        The optimizer's diagnostic message.
-    success : bool
-        Whether every included optimizer converged. A valid fit can still have
-        success=False, for example after an optimizer iteration limit.
-    nfev : int
-        The number of function evaluations done during optimization.
-    nit : int
-        The sum of optimizer iterations, not background refinement attempts.
-
-    """
-
-    message: str
-    success: bool
-    nfev: int
-    nit: int
-
-
-def _combine_diagnostics(*items: OptimizationDiagnostics) -> OptimizationDiagnostics:
-    """Combine disjoint attempts into an immutable snapshot."""
-    return OptimizationDiagnostics(
-        message="; ".join(item.message for item in items),
-        success=all(item.success for item in items),
-        nfev=sum(item.nfev for item in items),
-        nit=sum(item.nit for item in items),
-    )
+type FitOutcome = BackendResult
+type FitEvent = BackendEvent
 
 
 class PSpiralFitter:
@@ -320,8 +75,8 @@ class PSpiralFitter:
         max_iterations: int | None = 50,
         atol: float = 0.0,
         rtol: float = 0.0,
-        smoothing_func: _SmoothingFunc | None = None,
-        mask_func: _MaskFunc | None = None,
+        smoothing_func: _SmoothingFunc | SmoothConfig | None = None,
+        mask_func: _MaskFunc | MaskConfig | None = None,
         bounds: ParameterBounds | Sequence[ParameterBounds] | None = None,
     ) -> None:
         """Initialize the fitter given the configuration.
@@ -353,42 +108,14 @@ class PSpiralFitter:
             affects the one-component candidate in automatic selection.
 
         """
-        if max_iterations is not None and (
-            isinstance(max_iterations, bool) or not isinstance(max_iterations, (int, np.integer)) or max_iterations < 0  # pyright: ignore[reportUnnecessaryIsInstance]
-        ):
-            msg = "max_iterations must be a nonnegative integer or None."
-            raise ValueError(msg)
-        self._max_iterations: int | None = max_iterations
-
-        for name, tolerance in (("atol", atol), ("rtol", rtol)):
-            if not np.isfinite(tolerance) or tolerance < 0:
-                msg = f"{name} must be finite and nonnegative."
-                raise ValueError(msg)
-
-        self._atol: float = float(atol)
-        self._rtol: float = float(rtol)
-
-        self._smoothing_func: _SmoothingFunc = create_gaussian_smoother(2.0) if smoothing_func is None else smoothing_func
-        self._mask_func: _MaskFunc = create_sigmoid_mask(1.0, 40.0) if mask_func is None else mask_func
-
-        # A single object broadcasts; explicit sequences select an ordered prefix.
-        self._bounds: ParameterBounds | Sequence[ParameterBounds] = bounds if bounds is not None else ParameterBounds()
-
-    @property
-    def mask_func(self) -> _MaskFunc:
-        """_MaskFunc: Return the mask function used."""
-        return self._mask_func
-
-    def _component_bounds(self, num_components: int) -> Sequence[ParameterBounds]:
-        if num_components < 1:
-            msg = "Component bounds require a positive component count."
-            raise ValueError(msg)
-        if isinstance(self._bounds, ParameterBounds):
-            return (self._bounds,) * num_components
-        if num_components > len(self._bounds):
-            msg = "Not enough bounds for the requested component count."
-            raise ValueError(msg)
-        return self._bounds[:num_components]
+        self._backend: FitBackend = PythonFitBackend(
+            max_iterations=max_iterations,
+            atol=atol,
+            rtol=rtol,
+            smoothing_func=smoothing_func,
+            mask_func=mask_func,
+            bounds=bounds,
+        )
 
     def fit_spiral(
         self,
@@ -402,7 +129,7 @@ class PSpiralFitter:
         rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
-    ) -> FitOutcome:
+    ) -> BackendResult:
         """Bin samples, estimate their background, and return a terminal outcome.
 
         Parameters
@@ -467,7 +194,7 @@ class PSpiralFitter:
         rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
-    ) -> Generator[FitEvent]:
+    ) -> Generator[BackendEvent]:
         """Lazily bin samples and yield fit events.
 
         Inputs and keyword options are the same as fit_spiral. Binning and
@@ -488,7 +215,7 @@ class PSpiralFitter:
 
         """
         # Validate bins
-        self._validate_fit_options(num_components, winding, warm_start)
+        self._validate_public_options(num_components, winding, warm_start)
         for name, edges in (("z_bins", z_bins), ("vz_bins", vz_bins)):
             if edges.ndim != 1 or edges.size < 2 or not np.all(np.isfinite(edges)) or np.any(np.diff(edges) <= 0):
                 msg = f"{name} must contain finite, strictly increasing bin edges."
@@ -558,7 +285,7 @@ class PSpiralFitter:
         rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
-    ) -> FitOutcome:
+    ) -> BackendResult:
         """Fit an existing count map and background, returning the terminal outcome.
 
         The four positional arrays must share a 2D shape, with rows along vz and
@@ -576,12 +303,12 @@ class PSpiralFitter:
         fit_spiral_with_background_gen : Full parameter and event documentation.
 
         """
-        val = _get_value_from_gen(
-            self.fit_spiral_with_background_gen(
-                initial_density,
-                initial_background,
-                z_mesh,
-                vz_mesh,
+        return self._backend.fit(
+            FitRequest(
+                initial_density=initial_density,
+                initial_background=initial_background,
+                z_mesh=z_mesh,
+                vz_mesh=vz_mesh,
                 winding=winding,
                 warm_start=warm_start,
                 rng=rng,
@@ -589,9 +316,6 @@ class PSpiralFitter:
                 improve_background=improve_background,
             )
         )
-        assert val is not None
-        assert isinstance(val, FitSuccess | FitFailure)
-        return val
 
     def fit_spiral_with_background_gen(
         self,
@@ -605,7 +329,7 @@ class PSpiralFitter:
         rng: np.random.Generator | None = None,
         num_components: int | None = None,
         improve_background: bool = True,
-    ) -> Generator[FitEvent]:
+    ) -> Generator[BackendEvent]:
         """Fit a phase spiral to the given vertical phase space map and background.
 
         Parameters
@@ -668,51 +392,39 @@ class PSpiralFitter:
         arrays should not be mutated while consuming the stream.
 
         """
-        # Yield progress snapshots, then exactly one terminal success or failure.
-        # If given a warm start, the number of components must be explicitly set.
-        self._validate_fit_options(num_components, winding, warm_start)
+        yield from self._backend.fit_events(
+            request=FitRequest(
+                initial_density=initial_density,
+                initial_background=initial_background,
+                z_mesh=z_mesh,
+                vz_mesh=vz_mesh,
+                winding=winding,
+                warm_start=warm_start,
+                rng=rng,
+                num_components=num_components,
+                improve_background=improve_background,
+            )
+        )
 
-        if rng is None:
-            rng = np.random.default_rng()
-
-        PSpiralFitter._validate_array_inputs(initial_density, initial_background, z_mesh, vz_mesh)
-
-        mask: Final[onp.Array2D[np.float64]] = self._mask_func(z_mesh, vz_mesh)
-        self._validate_callback_shape("mask_func", mask, initial_density.shape)
-        if not np.all(np.isfinite(mask)) or np.any(mask < 0) or not np.any(mask > 0):
-            msg = "mask_func must return finite, nonnegative weights with at least one positive weight."
+    @staticmethod
+    def _validate_public_options(
+        num_components: int | None,
+        winding: int | None,
+        warm_start: onp.Array1D[np.float64] | None,
+    ) -> None:
+        if num_components is not None and (
+            isinstance(num_components, bool) or not isinstance(num_components, (int, np.integer)) or num_components not in (1, 2)
+        ):
+            msg = "`num_components` must be 1 or 2, or `None`; check component bounds."
             raise ValueError(msg)
-        if not self._valid_background(initial_density) or not self._valid_background(initial_background):
-            yield self._unusable_data("Counts and background must have positive finite totals.")
-            return
-
-        initial_fit = self._establish_initial_fit(
-            initial_density,
-            initial_background,
-            mask,
-            z_mesh,
-            vz_mesh,
-            rng=rng,
-            num_components=num_components,
-            guess=warm_start,
-            winding=winding,
-        )
-
-        # Failed
-        if isinstance(initial_fit, FitFailure):
-            yield initial_fit
-            return
-
-        # Succeeded but no background refinement
-        if not improve_background:
-            yield initial_fit
-            return
-
-        yield from self._refine_background_gen(
-            initial_fit,
-            mask,
-            rng,
-        )
+        if winding is not None and (
+            isinstance(winding, bool) or not isinstance(winding, (int, np.integer)) or winding not in (-1, 1)
+        ):
+            msg = "winding must be -1 or 1, or None."
+            raise ValueError(msg)
+        if warm_start is not None and num_components is None:
+            msg = "Can not use warm start if the number of component is not set."
+            raise ValueError(msg)
 
     @staticmethod
     def _unusable_data(message: str) -> FitFailure:
@@ -722,434 +434,11 @@ class PSpiralFitter:
             OptimizationDiagnostics(message="No optimization took place.", success=False, nfev=0, nit=0),
         )
 
-    def _validate_fit_options(
-        self,
-        num_components: int | None,
-        winding: int | None,
-        warm_start: onp.Array1D[np.float64] | None,
-    ) -> None:
-        if num_components is not None and (
-            isinstance(num_components, bool) or not isinstance(num_components, (int, np.integer)) or num_components not in (1, 2)  # pyright: ignore[reportUnnecessaryIsInstance]
-        ):
-            msg = "`num_components` must be 1 or 2, or `None`; check component bounds."
-            raise ValueError(msg)
-        if winding is not None and (
-            isinstance(winding, bool) or not isinstance(winding, (int, np.integer)) or winding not in (-1, 1)  # pyright: ignore[reportUnnecessaryIsInstance]
-        ):
-            msg = "winding must be -1 or 1, or None."
-            raise ValueError(msg)
-        if warm_start is not None and num_components is None:
-            msg = "Can not use warm start if the number of component is not set."
-            raise ValueError(msg)
-        selected_bounds = self._component_bounds(num_components if num_components is not None else 2)
-        if warm_start is not None:
-            warm_start = ParameterLayout.from_bounds(selected_bounds).pack(warm_start)
-
-    @staticmethod
-    def _validate_callback_shape(name: str, value: object, shape: tuple[int, int]) -> None:
-        if not isinstance(value, np.ndarray) or value.shape != shape:
-            msg = f"{name} must return a 2D array with shape {shape}."
-            raise ValueError(msg)
-        if value.dtype.kind not in "biuf":
-            msg = f"{name} must return a real numeric array."
-            raise ValueError(msg)
-
     @staticmethod
     def _valid_background(background: onp.Array2D[np.float64]) -> bool:
         with np.errstate(over="ignore", invalid="ignore"):
             total = np.sum(background)
         return bool(np.all(np.isfinite(background)) and np.all(background >= 0) and np.isfinite(total) and total > 0)
-
-    @staticmethod
-    def _validate_array_inputs(
-        initial_density: onp.Array2D[np.float64],
-        initial_background: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-    ) -> None:
-        # Validate dimensionality of arrays
-        if initial_density.size == 0:
-            msg = "Input maps must be nonempty."
-            raise ValueError(msg)
-        for name, ndim in (
-            ("initial_density", initial_density.ndim),
-            ("initial_background", initial_background.ndim),
-            ("z_mesh", z_mesh.ndim),
-            ("vz_mesh", vz_mesh.ndim),
-        ):
-            if ndim != 2:
-                msg = f"`{name}` must be a 2D array."
-                raise ValueError(msg)
-        # Validate that arrays are the same shape
-        common_shape: tuple[int, int] = initial_density.shape
-        for name, shape in (
-            ("initial_density", initial_density.shape),
-            ("initial_background", initial_background.shape),
-            ("z_mesh", z_mesh.shape),
-            ("vz_mesh", vz_mesh.shape),
-        ):
-            if shape != common_shape:
-                msg = f"`{name}` was expected to have shape {common_shape} but was {shape}."
-                raise ValueError(msg)
-        # Validate coordinates are purely finite
-        for name, arr in (
-            ("z_mesh", z_mesh),
-            ("vz_mesh", vz_mesh),
-        ):
-            if np.any(~np.isfinite(arr)):
-                msg = f"{name} has non-finite coordinates which is not allowed."
-                raise ValueError(msg)
-        # Validate counts and background are purely finite and non-negative
-        for name, arr in (
-            ("initial_density", initial_density),
-            ("initial_background", initial_background),
-        ):
-            if np.any(~np.isfinite(arr)):
-                msg = f"{name} has non-finite counts which is not allowed."
-                raise ValueError(msg)
-            if np.any(arr < 0.0):
-                msg = f"{name} has negative counts which is not allowed."
-                raise ValueError(msg)
-
-    def _optimize_parameters(
-        self,
-        objective_func: _ObjectiveFunc,
-        *,
-        bounds: optimize.Bounds,
-        rng: np.random.Generator,
-        guess: onp.Array1D[np.float64] | None,
-    ) -> OptimizationResult:
-        """Minimize the cost of the objective.
-
-        Parameters
-        ----------
-        objective_func : ObjectiveFunc
-            The objective to minimize.
-        bounds : optimize.Bounds
-            The bounds object.
-        rng : np.random.Generator
-            The rng.
-        guess : Array1D[f64] | None
-            A guess of the optimal parameters, must be trimmed to only free parameters.
-
-        Returns
-        -------
-        result : OptimizationResult
-            The optimization result.
-
-        """
-
-        def objective(parameters: onp.Array1D[np.float64]) -> float:
-            return float(objective_func(parameters))
-
-        if bounds.lb.size == 0:
-            parameters = np.empty(0, dtype=np.float64)
-            cost = objective(parameters)
-            return OptimizationResult(
-                parameters=parameters,
-                cost=cost,
-                success=bool(np.isfinite(cost)),  # pyright: ignore[reportAny]
-                nfev=1,
-                nit=0,
-                message="All parameters fixed; evaluated objective once.",
-            )
-
-        res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
-        if not res.success:
-            log.warning("Optimization did not converge: %s", res.message)
-        return OptimizationResult(
-            parameters=res.x,
-            cost=res.fun,
-            success=res.success,
-            nfev=res.nfev,
-            nit=res.nit,
-            message=str(res.message),
-        )
-
-    def _establish_initial_fit(
-        self,
-        density: onp.Array2D[np.float64],
-        background: onp.Array2D[np.float64],
-        mask: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-        *,
-        rng: np.random.Generator,
-        num_components: int | None = None,
-        guess: onp.Array1D[np.float64] | None = None,
-        winding: Literal[-1, 1] | None = None,
-    ) -> FitOutcome:
-        if num_components is not None:
-            return self._fit_with_fixed_background(
-                density,
-                background,
-                mask,
-                z_mesh,
-                vz_mesh,
-                num_components=num_components,
-                rng=rng,
-                guess=guess,
-                winding=winding,
-            )
-
-        if not isinstance(self._bounds, ParameterBounds) and len(self._bounds) < 2:
-            msg = "Automatic component selection requires at least two sets of bounds."
-            raise ValueError(msg)
-
-        res1 = self._fit_with_fixed_background(
-            density,
-            background,
-            mask,
-            z_mesh,
-            vz_mesh,
-            num_components=1,
-            rng=rng,
-            guess=guess,
-            winding=winding,
-        )
-        res2 = self._fit_with_fixed_background(
-            density,
-            background,
-            mask,
-            z_mesh,
-            vz_mesh,
-            num_components=2,
-            rng=rng,
-            guess=guess,
-            winding=winding,
-        )
-
-        # Both fits failed
-        if isinstance(res1, FitFailure) and isinstance(res2, FitFailure):
-            return FitFailure(
-                FitFailureReason.NO_VALID_CANDIDATE,
-                "No valid candidate found for either 1-component and 2-component fits.",
-                _combine_diagnostics(res1.diagnostics, res2.diagnostics),
-            )
-        # 1-component fit succeeded while 2-component fit failed
-        if isinstance(res1, FitSuccess) and isinstance(res2, FitFailure):
-            selected = res1.result
-        # 1-component fit failed while 2-component fit succeeded
-        elif isinstance(res1, FitFailure) and isinstance(res2, FitSuccess):
-            selected = res2.result
-        # Both succeeded
-        else:
-            assert isinstance(res1, FitSuccess), "just checked in above branches."
-            assert isinstance(res2, FitSuccess), "just checked in above branches."
-            q1 = ln_likelihood(density, res1.result.final_model.prediction(), mask)
-            q2 = ln_likelihood(density, res2.result.final_model.prediction(), mask)
-            # BIC penalizes the larger model's additional parameters.
-            k1 = ParameterLayout.from_bounds(self._component_bounds(1)).num_free
-            k2 = ParameterLayout.from_bounds(self._component_bounds(2)).num_free
-            num_particles = np.sum(density)
-            b1 = k1 * np.log(num_particles) - 2.0 * q1  # pyright: ignore[reportAny]
-            b2 = k2 * np.log(num_particles) - 2.0 * q2  # pyright: ignore[reportAny]
-            selected = res2.result if b2 < b1 else res1.result
-
-        return FitSuccess(
-            selected,
-            diagnostics=_combine_diagnostics(res1.diagnostics, res2.diagnostics),
-        )
-
-    def _fit_with_fixed_background(
-        self,
-        density: onp.Array2D[np.float64],
-        background: onp.Array2D[np.float64],
-        mask: onp.Array2D[np.float64],
-        z_mesh: onp.Array2D[np.float64],
-        vz_mesh: onp.Array2D[np.float64],
-        *,
-        num_components: int,
-        rng: np.random.Generator,
-        guess: onp.Array1D[np.float64] | None = None,
-        winding: Literal[-1, 1] | None = None,
-    ) -> FitOutcome:
-        layout = ParameterLayout.from_bounds(self._component_bounds(num_components))
-        bounds = optimize.Bounds(lb=layout.lower, ub=layout.upper)
-        free_guess: onp.Array1D[np.float64] | None = layout.pack(guess) if guess is not None else None
-
-        density_total = np.sum(density)
-        if not np.isfinite(density_total) or density_total <= 0:
-            return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE,
-                message="Total observed count must be positive and finite.",
-                diagnostics=OptimizationDiagnostics(message="No optimization took place.", success=False, nfev=0, nit=0),
-            )
-
-        def wrap_winding_objective(current_winding: Literal[-1, 1]) -> _ObjectiveFunc:
-            def _objective(free_parameters: onp.Array1D[np.float64]) -> float:
-                params = layout.unpack(free_parameters).reshape((num_components, 6))
-                model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=current_winding)
-                prediction = model.prediction()
-                prediction_total = np.sum(prediction)
-                if not np.isfinite(prediction_total) or prediction_total <= 0:
-                    return float("inf")
-                prediction *= density_total / prediction_total
-                return -ln_likelihood(density, prediction, mask)
-
-            return _objective
-
-        res: OptimizationResult
-        chosen_winding: Literal[-1, 1]
-        if winding is None:
-            pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=free_guess, bounds=bounds)
-            neg_res = self._optimize_parameters(wrap_winding_objective(-1), rng=rng, guess=free_guess, bounds=bounds)
-            diagnostics = _combine_diagnostics(pos_res.diagnostics, neg_res.diagnostics)
-            if np.isfinite(pos_res.cost) and (not np.isfinite(neg_res.cost) or pos_res.cost <= neg_res.cost):
-                chosen_winding = 1
-                res = pos_res
-            else:
-                chosen_winding = -1
-
-                res = neg_res
-        else:
-            # Optimize for chosen winding.
-            chosen_winding = winding
-            res = self._optimize_parameters(wrap_winding_objective(winding), rng=rng, guess=free_guess, bounds=bounds)
-            diagnostics = res.diagnostics
-
-        if not np.isfinite(res.cost):
-            return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE, message="No valid candidate model was found.", diagnostics=diagnostics
-            )
-
-        params: onp.Array2D[np.float64] = layout.unpack(res.parameters).reshape((num_components, 6))
-        model = PSpiralModel(params, z_mesh, vz_mesh, background, winding=chosen_winding)
-        prediction_total = np.sum(model.prediction())
-        if not np.isfinite(prediction_total) or prediction_total <= 0:
-            return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE,
-                message="Total predicted count must be positive and finite.",
-                diagnostics=diagnostics,
-            )
-        # Store the winning scale without mutating the caller's background.
-        model.background = background * (density_total / prediction_total)
-        final_lnl = ln_likelihood(density, model.prediction(), mask)
-        if not np.isfinite(final_lnl):
-            return FitFailure(
-                reason=FitFailureReason.NO_VALID_CANDIDATE, message="Normalized prediction is invalid.", diagnostics=diagnostics
-            )
-        return FitSuccess(
-            PSpiralFitResult(
-                initial_model=model,
-                final_model=model,
-                data=density,
-                num_iterations=0,
-                max_iterations=self._max_iterations,
-                lnl=final_lnl,
-                reason=FitTerminationReason.FIXED_BACKGROUND,
-            ),
-            diagnostics=diagnostics,
-        )
-
-    def _refine_background_gen(
-        self, initial_fit: FitSuccess, mask: onp.Array2D[np.float64], rng: np.random.Generator
-    ) -> Generator[FitSuccess | FitProgress]:
-        # Yield the initial fit
-        initial_model: PSpiralModel = initial_fit.result.final_model
-        initial_lnl: float = initial_fit.result.lnl
-        z_mesh: onp.Array2D[np.float64] = initial_model.z_mesh
-        vz_mesh: onp.Array2D[np.float64] = initial_model.vz_mesh
-        num_components: int = initial_fit.result.final_model.num_components
-        accepted: tuple[PSpiralModel, float] = (initial_model, initial_lnl)
-        diagnostics = initial_fit.diagnostics
-        yield FitProgress(model=initial_model, lnl=initial_lnl, iteration=0, diagnostics=diagnostics)
-
-        num_iterations: int = 0
-        termination_reason = FitTerminationReason.ITERATION_LIMIT
-        initial_density: Final[onp.Array2D[np.float64]] = initial_fit.result.data
-        while self._max_iterations is None or (num_iterations < self._max_iterations):
-            num_iterations += 1
-
-            current_model, current_lnl = accepted
-            current_perturbation = current_model.signal()
-            new_background = self._smoothing_func(initial_density / current_perturbation)
-            self._validate_callback_shape("smoothing_func", new_background, initial_density.shape)
-
-            if not self._valid_background(new_background):
-                yield FitSuccess(
-                    result=PSpiralFitResult(
-                        initial_model=initial_model,
-                        final_model=current_model,
-                        lnl=current_lnl,
-                        data=initial_density,
-                        num_iterations=num_iterations,
-                        max_iterations=self._max_iterations,
-                        reason=FitTerminationReason.INVALID_BACKGROUND_UPDATE,
-                    ),
-                    diagnostics=diagnostics,
-                )
-                return
-
-            candidate = self._fit_with_fixed_background(
-                initial_density,
-                new_background,
-                mask,
-                z_mesh,
-                vz_mesh,
-                num_components=num_components,
-                rng=rng,
-                guess=current_model.parameters.flatten(),
-                winding=initial_model.winding,
-            )
-            # Count rejected and failed attempts too; progress only reports accepted steps.
-            diagnostics = _combine_diagnostics(diagnostics, candidate.diagnostics)
-
-            if isinstance(candidate, FitFailure):
-                yield FitSuccess(
-                    PSpiralFitResult(
-                        initial_model=initial_model,
-                        final_model=current_model,
-                        lnl=current_lnl,
-                        data=initial_density,
-                        num_iterations=num_iterations,
-                        max_iterations=self._max_iterations,
-                        reason=FitTerminationReason.FAILED_REOPTIMIZATION,
-                    ),
-                    diagnostics=diagnostics,
-                )
-                return
-
-            # New lnl worse or equal to currently accepted lnl
-            if candidate.result.lnl <= current_lnl:
-                yield FitSuccess(
-                    PSpiralFitResult(
-                        initial_model=initial_model,
-                        final_model=current_model,
-                        lnl=current_lnl,
-                        data=initial_density,
-                        num_iterations=num_iterations,
-                        max_iterations=self._max_iterations,
-                        reason=FitTerminationReason.NO_IMPROVEMENT,
-                    ),
-                    diagnostics=diagnostics,
-                )
-                return
-
-            accepted = (candidate.result.final_model, candidate.result.lnl)
-            converged = candidate.result.lnl - current_lnl <= self._atol + self._rtol * abs(current_lnl)
-            yield FitProgress(
-                model=candidate.result.final_model,
-                iteration=num_iterations,
-                lnl=candidate.result.lnl,
-                diagnostics=candidate.diagnostics,
-            )
-            # Improvement was too marginal and so we have converged
-            if converged:
-                termination_reason = FitTerminationReason.CONVERGED
-                break
-        yield FitSuccess(
-            PSpiralFitResult(
-                initial_model=initial_model,
-                final_model=accepted[0],
-                lnl=accepted[1],
-                data=initial_density,
-                num_iterations=num_iterations,
-                max_iterations=self._max_iterations,
-                reason=termination_reason,
-            ),
-            diagnostics=diagnostics,
-        )
 
 
 def _get_value_from_gen[T](gen: Generator[T]) -> T | None:

@@ -11,7 +11,7 @@ import pytest
 from scipy.optimize import OptimizeResult
 
 from psnailder._likelihood_utils import ln_likelihood
-from psnailder.fit import FitSuccess, Fixed, Interval, ParameterBounds, PSpiralFitter
+from psnailder.fit import FitSuccess, Fixed, Interval, ParameterBounds, PSpiralFitter, create_sigmoid_mask
 from psnailder.model import PSpiralModel
 from psnailder.param_layout import ParameterLayout
 
@@ -140,7 +140,7 @@ def test_bic_counts_fixed_parameters_as_zero() -> None:
     outcome = fitter.fit_spiral_with_background(data, background, coordinates, coordinates, winding=1, improve_background=False)
     assert isinstance(outcome, FitSuccess)
     assert outcome.result.final_model.num_components == 2
-    mask = fitter.mask_func(coordinates, coordinates)
+    mask = create_sigmoid_mask(1.0, 40.0)(coordinates, coordinates)
     assert outcome.result.lnl == pytest.approx(ln_likelihood(data, outcome.result.final_model.prediction(), mask))  # pyright: ignore[reportUnknownMemberType]
 
 
