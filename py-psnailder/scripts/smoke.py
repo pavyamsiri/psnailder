@@ -1,36 +1,25 @@
 """Sample script to test parity between python and rust."""
 
+# The aim of this script to print out diagnostics regarding the test.
+# ruff: noqa: T201
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
 
 import numpy as np
+from matplotlib import pyplot as plt
+from phasmix.component import AlinderComponent, GaussianComponent
+from phasmix.mock import MockModel
 
 from psnailder import fit
+from psnailder._background_utils import generate_initial_background
+from psnailder._internal import PSpiralFitter as PSpiralFitterRust
 from psnailder._likelihood_utils import ln_likelihood
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from optype import numpy as onp
-
-type _ObjectiveFunc = Callable[[onp.Array1D[np.float64]], onp.ToFloat]
-type _SmoothingFunc = Callable[[onp.Array2D[np.float64]], onp.Array2D[np.float64]]
-type _MaskFunc = Callable[[onp.Array2D[np.float64], onp.Array2D[np.float64]], onp.Array2D[np.float64]]
+from psnailder.fit import PSpiralFitter as PSpiralFitterPython
 
 
 def _main() -> None:
-    import time
-
-    import numpy as np
-    from matplotlib import pyplot as plt
-    from phasmix.component import AlinderComponent, GaussianComponent
-    from phasmix.mock import MockModel
-
-    from psnailder._background_utils import generate_initial_background
-    from psnailder._internal import PSpiralFitter as PSpiralFitterRust
-    from psnailder.fit import PSpiralFitter as PSpiralFitterPython
-
     signal1 = AlinderComponent(
         alpha=0.5,
         b=0.05,
@@ -56,7 +45,7 @@ def _main() -> None:
         (background_comp,),
     )
 
-    print(f"{len(mock_model._signal)}-arm model")
+    print(f"{len(mock_model.signal)}-arm model")
 
     num_x_bins = 100
     num_y_bins = 100
@@ -125,7 +114,7 @@ def _main() -> None:
     rs_background = res_rust.final_background.reshape(x_mesh.shape)
     rs_density = res_rust.final_model.perturbation(x_mesh.flatten(), y_mesh.flatten()).reshape(x_mesh.shape) * rs_background
 
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(12, 8))  # pyright: ignore[reportUnknownMemberType]
     # [true density, python density, rust density]
     # [true background, python background, rust background]
     true_density_axes = fig.add_subplot(231)
@@ -135,23 +124,23 @@ def _main() -> None:
     py_background_axes = fig.add_subplot(235)
     rs_background_axes = fig.add_subplot(236)
 
-    true_density_axes.set_title("True density")
-    py_density_axes.set_title(f"Python density: lnl = {res_py.lnl}")
-    rs_density_axes.set_title(f"Rust density: lnl = {res_rust.lnl}")
-    true_background_axes.set_title("True background")
-    py_background_axes.set_title("Python background")
-    rs_background_axes.set_title("Rust background")
+    _ = true_density_axes.set_title("True density")  # pyright: ignore[reportUnknownMemberType]
+    _ = py_density_axes.set_title(f"Python density: lnl = {res_py.lnl}")  # pyright: ignore[reportUnknownMemberType]
+    _ = rs_density_axes.set_title(f"Rust density: lnl = {res_rust.lnl}")  # pyright: ignore[reportUnknownMemberType]
+    _ = true_background_axes.set_title("True background")  # pyright: ignore[reportUnknownMemberType]
+    _ = py_background_axes.set_title("Python background")  # pyright: ignore[reportUnknownMemberType]
+    _ = rs_background_axes.set_title("Rust background")  # pyright: ignore[reportUnknownMemberType]
 
-    true_density_axes.pcolormesh(x_mesh, y_mesh, density)
-    py_density_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.prediction())
-    rs_density_axes.pcolormesh(x_mesh, y_mesh, rs_density)
+    _ = true_density_axes.pcolormesh(x_mesh, y_mesh, density)  # pyright: ignore[reportUnknownMemberType]
+    _ = py_density_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.prediction())  # pyright: ignore[reportUnknownMemberType]
+    _ = rs_density_axes.pcolormesh(x_mesh, y_mesh, rs_density)  # pyright: ignore[reportUnknownMemberType]
 
-    true_background_axes.pcolormesh(x_mesh, y_mesh, initial_background)
-    py_background_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.background)
-    rs_background_axes.pcolormesh(x_mesh, y_mesh, rs_background)
+    _ = true_background_axes.pcolormesh(x_mesh, y_mesh, initial_background)  # pyright: ignore[reportUnknownMemberType]
+    _ = py_background_axes.pcolormesh(x_mesh, y_mesh, res_py.final_model.background)  # pyright: ignore[reportUnknownMemberType]
+    _ = rs_background_axes.pcolormesh(x_mesh, y_mesh, rs_background)  # pyright: ignore[reportUnknownMemberType]
 
     fig.tight_layout()
-    fig.savefig("./out.png")
+    fig.savefig("./out.png")  # pyright: ignore[reportUnknownMemberType]
     plt.close(fig)
 
 

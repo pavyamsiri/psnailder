@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 
 
 def verify_array_shape[SCT: np.generic, ShapeT: tuple[Any, ...]](
-    arr: onp.ArrayND[SCT, Any], shape: ShapeT
+    arr: onp.ArrayND[SCT, tuple[Any, ...]],  # pyright: ignore[reportExplicitAny]
+    shape: ShapeT,
 ) -> onp.ArrayND[SCT, ShapeT]:
     """Verify that the given array has the expected shape, casting it into the proper shaped array type.
 
@@ -19,6 +20,8 @@ def verify_array_shape[SCT: np.generic, ShapeT: tuple[Any, ...]](
     ----------
     arr : ArrayND[SCT, Any]
         The unshaped array.
+    shape : SCT
+        The expected shape.
 
     Returns
     -------

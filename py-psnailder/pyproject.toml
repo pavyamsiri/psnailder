@@ -21,6 +21,8 @@ build-backend = "maturin"
 [tool.pyright]
 typeCheckingMode = "strict"
 deprecateTypingAliases = true
+reportExplicitAny = false
+reportAny = false
 reportDeprecated = true
 reportMissingParameterType = true
 reportMissingTypeArgument = true
@@ -38,8 +40,6 @@ line-length = 130
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "ANN101",
-    "ANN102",
     "COM812",
     "D203",
     "D213",

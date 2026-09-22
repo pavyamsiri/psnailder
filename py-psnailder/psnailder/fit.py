@@ -247,7 +247,7 @@ def create_sigmoid_mask(z_scale: float, vz_scale: float) -> _MaskFunc:
 
 
 @dataclass(frozen=True)
-class _OptimizationResult:
+class OptimizationResult:
     """The parameter optimization result.
 
     Attributes
@@ -373,6 +373,11 @@ class PSpiralFitter:
 
         # A single object broadcasts; explicit sequences select an ordered prefix.
         self._bounds: ParameterBounds | Sequence[ParameterBounds] = bounds if bounds is not None else ParameterBounds()
+
+    @property
+    def mask_func(self) -> _MaskFunc:
+        """_MaskFunc: Return the mask function used."""
+        return self._mask_func
 
     def _component_bounds(self, num_components: int) -> Sequence[ParameterBounds]:
         if num_components < 1:
@@ -813,7 +818,7 @@ class PSpiralFitter:
         bounds: optimize.Bounds,
         rng: np.random.Generator,
         guess: onp.Array1D[np.float64] | None,
-    ) -> _OptimizationResult:
+    ) -> OptimizationResult:
         """Minimize the cost of the objective.
 
         Parameters
@@ -840,7 +845,7 @@ class PSpiralFitter:
         if bounds.lb.size == 0:
             parameters = np.empty(0, dtype=np.float64)
             cost = objective(parameters)
-            return _OptimizationResult(
+            return OptimizationResult(
                 parameters=parameters,
                 cost=cost,
                 success=bool(np.isfinite(cost)),  # pyright: ignore[reportAny]
@@ -852,7 +857,7 @@ class PSpiralFitter:
         res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
         if not res.success:
             log.warning("Optimization did not converge: %s", res.message)
-        return _OptimizationResult(
+        return OptimizationResult(
             parameters=res.x,
             cost=res.fun,
             success=res.success,
@@ -984,7 +989,7 @@ class PSpiralFitter:
 
             return _objective
 
-        res: _OptimizationResult
+        res: OptimizationResult
         chosen_winding: Literal[-1, 1]
         if winding is None:
             pos_res = self._optimize_parameters(wrap_winding_objective(1), rng=rng, guess=free_guess, bounds=bounds)

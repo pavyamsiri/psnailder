@@ -64,6 +64,8 @@ def lrt_pvalue(
         The null model prediction.
     mask : Array2D[f64]
         The mask to de-emphasise the less important parts of the phase plane.
+    dof : int
+        The number of degrees of freedom.
 
     Returns
     -------

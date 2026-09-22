@@ -1,5 +1,8 @@
 """Consistency of component and model evaluation."""
 
+# Test names describe the behavior under test; separate docstrings are optional.
+# ruff: noqa: D103
+
 from typing import Literal
 
 import numpy as np

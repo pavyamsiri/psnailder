@@ -58,9 +58,9 @@ class PSpiralComponent:
 
         Parameters
         ----------
-        z_mesh : ArrayND[f64, S]
+        z : ArrayND[f64, S]
             The z coordinates.
-        vz_mesh : ArrayND[f64, S]
+        vz : ArrayND[f64, S]
             The vz coordinates.
 
         Returns
@@ -72,7 +72,7 @@ class PSpiralComponent:
         assert z.shape == vz.shape
 
         scaled_z = np.multiply(z, self.scale_factor)
-        scaled_vz = vz * np.reciprocal(self.scale_factor)
+        scaled_vz: onp.ArrayND[np.float64, ShapeT] = (vz * np.reciprocal(self.scale_factor)).astype(np.float64)  # pyright: ignore[reportAny]
         r_mesh = np.hypot(z, scaled_vz)
         theta_mesh = np.arctan2(vz, scaled_z)
 
@@ -99,12 +99,13 @@ class PSpiralComponent:
         b_val: np.float64 = np.float64(abs(self.b))
         c_val: np.float64 = np.float64(abs(self.c))
         # Match Rust: coefficient magnitudes set phase; winding sets direction.
+        phase: onp.ArrayND[np.float64, ShapeT]
         if c_val > 1e-10:
             half_b_over_c = 0.5 * b_val / c_val
-            phase = -half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val)
+            phase = -half_b_over_c + np.sqrt(np.square(half_b_over_c) + r / c_val)  # pyright: ignore[reportAny]
         # Linear branch, including near-zero quadratic coefficients.
         else:
-            phase = r / b_val
+            phase = r / b_val  # pyright: ignore[reportAssignmentType]
         return verify_array_shape(phase, r.shape)
 
     def model_phase(self, r_test: float = 0.5) -> float:
@@ -149,12 +150,12 @@ class PSpiralComponent:
         assert len(parameters) == 6
 
         return PSpiralComponent(
-            alpha=parameters[0],
-            b=parameters[1],
-            c=parameters[2],
-            theta0=parameters[3],
-            scale_factor=parameters[4],
-            rho=parameters[5],
+            alpha=parameters[0],  # pyright: ignore[reportAny]
+            b=parameters[1],  # pyright: ignore[reportAny]
+            c=parameters[2],  # pyright: ignore[reportAny]
+            theta0=parameters[3],  # pyright: ignore[reportAny]
+            scale_factor=parameters[4],  # pyright: ignore[reportAny]
+            rho=parameters[5],  # pyright: ignore[reportAny]
             flattening_strength=flattening_strength,
             winding=winding,
         )
@@ -188,11 +189,11 @@ class PSpiralComponent:
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
-            f"α={self.alpha:.4g}, "
+            f"α={self.alpha:.4g}, "  # noqa: RUF001
             f"b={self.b:.4g}, "
             f"c={self.c:.4g}, "
             f"θ₀={self.theta0:.4g} rad, "
             f"scale={self.scale_factor:.4g}, "
-            f"ρ={self.rho:.4g}, "
+            f"ρ={self.rho:.4g}, "  # noqa: RUF001
             f"winding={self.winding:+d})"
         )

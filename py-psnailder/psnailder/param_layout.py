@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -11,6 +10,8 @@ import numpy as np
 from .bounds import Fixed, Interval, ParameterBounds
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from optype import numpy as onp
 
 
@@ -42,13 +43,17 @@ class ParameterLayout:
     def __post_init__(self) -> None:
         """Validate the bounds and free indices."""
         if any(array.ndim != 1 for array in (self.template, self.free_indices, self.lower, self.upper)):
-            raise ValueError("Layout arrays must be one-dimensional.")
+            msg = "Layout arrays must be one-dimensional."
+            raise ValueError(msg)
         if not np.issubdtype(self.free_indices.dtype, np.integer):
-            raise ValueError("Free parameter indices must be integers.")
+            msg = "Free parameter indices must be integers."
+            raise ValueError(msg)
         if np.unique(self.free_indices).size != self.free_indices.size:
-            raise ValueError("Free parameter indices must be unique.")
+            msg = "Free parameter indices must be unique."
+            raise ValueError(msg)
         if not all(np.all(np.isfinite(array)) for array in (self.template, self.lower, self.upper)):
-            raise ValueError("Layout values must be finite.")
+            msg = "Layout values must be finite."
+            raise ValueError(msg)
 
         num_total_parameters = len(self.template)
         num_free_parameters = len(self.free_indices)
@@ -166,10 +171,10 @@ class ParameterLayout:
 
         values: onp.Array1D[np.float64] = full_parameters[self.free_indices]
         if not np.all(np.isfinite(values)):
-            raise ValueError("Free initial guesses must be finite.")
+            msg = "Free initial guesses must be finite."
+            raise ValueError(msg)
         width: onp.Array1D[np.float64] = self.upper - self.lower
-        clamped = np.clip(values, self.lower + eps * width, self.upper - eps * width)
-        return clamped
+        return np.clip(values, self.lower + eps * width, self.upper - eps * width)
 
     def unpack(self, free_parameters: onp.Array1D[np.float64]) -> onp.Array1D[np.float64]:
         """Unpack an array of the free parameter set into an array of the full parameter set.

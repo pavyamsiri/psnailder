@@ -1,5 +1,8 @@
 """Invalid predictions must penalize the whole candidate."""
 
+# Test names describe the behavior under test; separate docstrings are optional.
+# ruff: noqa: D103
+
 import numpy as np
 import pytest
 
@@ -27,4 +30,4 @@ def test_finite_prediction_score_is_unchanged() -> None:
     data = np.array([[2.0, 3.0, 4.0]])
     prediction = np.array([[1.0, 0.0, 2.0]])
     mask = np.array([[1.0, 1.0, 0.5]])
-    assert ln_likelihood(data, prediction, mask) == pytest.approx(-0.75)
+    assert ln_likelihood(data, prediction, mask) == pytest.approx(-0.75)  # pyright: ignore[reportUnknownMemberType]
