@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from phasmix.component import AlinderComponent, GaussianComponent
 from phasmix.mock import MockModel
 
-from psnailder import fit
+from psnailder import bootstrap_uncertainty, fit
 from psnailder._background_utils import generate_initial_background
 from psnailder._likelihood_utils import ln_likelihood
 from psnailder.fit import PSpiralFitter
@@ -78,7 +78,7 @@ def _main() -> None:
     fitter_rust = PSpiralFitter(backend="rust", max_iterations=10)
     start_time = time.perf_counter()
     outcome_rust = fitter_rust.fit_spiral_with_background(
-        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True, rng=np.random.default_rng(1)
+        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=False, rng=np.random.default_rng(1)
     )
     elapsed_rust = time.perf_counter() - start_time
     if isinstance(outcome_rust, fit.FitFailure):
@@ -96,7 +96,7 @@ def _main() -> None:
     fitter_py = PSpiralFitter(backend="python", max_iterations=10)
     start_time = time.perf_counter()
     outcome_py = fitter_py.fit_spiral_with_background(
-        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=True, rng=np.random.default_rng(1)
+        density, initial_background, x_mesh, y_mesh, num_components=None, improve_background=False, rng=np.random.default_rng(1)
     )
     elapsed_py = time.perf_counter() - start_time
     if isinstance(outcome_py, fit.FitFailure):
@@ -109,6 +109,25 @@ def _main() -> None:
     print(f"Python final model: {res_py.final_model}")
     print(f"Python final lnl: {res_py.lnl}")
     print(f"Python pvalue: {res_py.final_model.pvalue(density, mask)}")
+
+    print("\n--- Python Bootstrap Errors (fixed background, 200 local refits) ---", flush=True)
+    start_time = time.perf_counter()
+    uncertainty = bootstrap_uncertainty(fitter_py, res_py, n_resamples=200, seed=2, workers=4)
+    elapsed_bootstrap = time.perf_counter() - start_time
+    print(f"Bootstrap alone took {elapsed_bootstrap:.3f} seconds")
+    print(f"Successful local refits: {uncertainty.n_successful}/{len(uncertainty.replicates)}")
+    print("Parameter estimates +/- bootstrap standard errors; 95% percentile intervals:")
+    parameter_names = ("alpha", "b", "c", "theta0", "scale_factor", "rho")
+    for index, (estimate, error, interval) in enumerate(
+        zip(uncertainty.reference, uncertainty.standard_errors, uncertainty.intervals, strict=True)
+    ):
+        component, parameter = divmod(index, len(parameter_names))
+        print(
+            f"  Component {component + 1} {parameter_names[parameter]:12s}: "
+            f"{estimate:.6g} +/- {error:.6g}  [{interval[0]:.6g}, {interval[1]:.6g}]"
+        )
+    for warning in uncertainty.warnings:
+        print(f"Bootstrap note: {warning}")
 
     rs_background = res_rust.final_model.background.reshape(x_mesh.shape)
     rs_density = res_rust.final_model.prediction()

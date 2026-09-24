@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Generator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from typing import Final, Literal, override
 
 import numpy as np
@@ -150,6 +151,16 @@ class PythonFitBackend(FitBackend):
 
         # A single object broadcasts; explicit sequences select an ordered prefix.
         self._bounds: ParameterBounds | Sequence[ParameterBounds] = bounds if bounds is not None else ParameterBounds()
+        self._local_maxiter: int | None = None
+
+    def with_local_optimizer(self, *, maxiter: int) -> PythonFitBackend:
+        """Copy this backend for bounded local refits without changing ordinary fits."""
+        if type(maxiter) is not int or maxiter < 1:
+            msg = "maxiter must be a positive integer."
+            raise ValueError(msg)
+        backend = copy(self)
+        backend._local_maxiter = maxiter  # noqa: SLF001 -- configure an isolated copy.
+        return backend
 
     @staticmethod
     def _parse_smooth_func(config: _SmoothingFunc | SmoothConfig | None) -> _SmoothingFunc:
@@ -431,6 +442,33 @@ class PythonFitBackend(FitBackend):
                 message="All parameters fixed; evaluated objective once.",
             )
 
+        if self._local_maxiter is not None:
+            if guess is None:
+                msg = "Local refits require initial parameters."
+                raise ValueError(msg)
+            width = bounds.ub - bounds.lb
+
+            def scaled_objective(values: onp.Array1D[np.float64]) -> float:
+                return objective(bounds.lb + width * values)
+
+            start = np.clip((guess - bounds.lb) / width, 0.0, 1.0)
+            initial_cost = scaled_objective(start)
+            local = optimize.minimize(
+                scaled_objective,
+                start,
+                method="L-BFGS-B",
+                bounds=optimize.Bounds(np.zeros_like(start), np.ones_like(start)),
+                options={"maxiter": self._local_maxiter, "ftol": 1e-10, "gtol": 1e-6},
+            )
+            valid = bool(local.success and np.isfinite(local.fun) and local.fun <= initial_cost + 1e-8)
+            return OptimizationResult(
+                parameters=bounds.lb + width * local.x,
+                cost=float(local.fun),
+                success=valid,
+                nfev=int(local.nfev) + 1,
+                nit=int(local.nit),
+                message=str(local.message),
+            )
         res = optimize.differential_evolution(objective, bounds=bounds, x0=guess, rng=rng)
         if not res.success:
             log.warning("Optimization did not converge: %s", res.message)

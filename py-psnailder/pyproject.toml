@@ -64,6 +64,8 @@ dev = [
 [tool.maturin]
 module-name = "psnailder._internal"
 features = ["pyo3/extension-module"]
+# Keep uv's editable installs fast enough for fitting and benchmarking.
+editable-profile = "release"
 
 [tool.uv]
 cache-keys = [

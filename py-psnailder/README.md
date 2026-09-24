@@ -4,6 +4,82 @@ Fit phase-spiral models to position/velocity samples or an existing count map.
 The examples below describe the Python fitter; the private Rust binding does
 not yet expose the same bounds or outcome API.
 
+## Experimental bootstrap uncertainty (Python only)
+
+Run uncertainty estimation after a fit, using the same Python `fitter` and its
+unchanged configuration. Normal fits do no bootstrap work. Given a successful
+`outcome` from any fitting method:
+
+```python
+from psnailder import bootstrap_uncertainty
+from psnailder.fit import FitSuccess
+
+assert isinstance(outcome, FitSuccess)
+uncertainty = bootstrap_uncertainty(
+    fitter, outcome.result, n_resamples=200, seed=42, workers=4,
+)
+print(uncertainty.n_successful)
+print(uncertainty.standard_errors)
+print(uncertainty.intervals)  # shape (6 * num_components, 2); 95% percentile intervals
+print(uncertainty.warnings)
+```
+
+This default simulates multinomial count maps from the fitted prediction,
+preserving the observed total. It holds the estimated background shape fixed,
+so the errors are conditional on that background. Inputs must be integer count
+maps, not weighted densities. Component count and winding remain fixed.
+
+To include sampling variability in the KDE and background refinement, supply
+the original paired stars and bin edges:
+
+```python
+from psnailder import BootstrapSamples
+
+uncertainty = bootstrap_uncertainty(
+    fitter,
+    outcome.result,
+    samples=BootstrapSamples(
+        z=z, vz=vz, z_bins=z_bins, vz_bins=vz_bins,
+        improve_background=True,  # match the original fit
+    ),
+    n_resamples=200,
+    seed=42,
+    workers=4,
+    maxiter=500,  # local optimizer limit per parameter fit
+)
+```
+
+The samples and bins must reproduce the original count map and grid. Include
+out-of-grid stars if they were originally supplied to the KDE. This workflow
+rebuilds the KDE for every draw, so it can cost substantially more than the
+fixed-background count bootstrap. Custom callbacks must be thread-safe when
+using multiple workers; arrays and fitter settings must not change during a run.
+
+Both workflows start each replicate at the original fitted parameters and use
+scaled, bounded L-BFGS-B, including each background-refinement update. Full-period
+phase bounds are centered on the original phase to permit crossing the usual
+`-pi/pi` seam; genuinely restricted phase intervals are preserved. Results unwrap
+phases around the original fit and match exchangeable two-component estimates.
+Parameter order is `alpha, b, c, theta0, scale_factor, rho` for each component.
+
+`parameters` contains one row per requested draw, with NaN rows for failed or
+nonconverged refits. `replicates` retains individual diagnostics, count totals,
+and termination reasons. `covariance`, `standard_errors`, `intervals`, and `bias`
+use accepted draws only; fewer than two accepted draws produce NaN summaries.
+Failure warnings must be inspected because excluding failures can bias results.
+Background iteration limits are reported separately from optimizer failures.
+Fixed parameters have zero sampling spread because they were held fixed.
+
+This prototype has no automatic global-search audit, retry, coverage calibration,
+or model-selection bootstrap. Treat its intervals as exploratory, especially
+with weak signals, bounds, ambiguous components, or multiple solutions. Around
+200 draws is a useful starting point for standard errors; interval tails usually
+need more. Reusing a seed preserves earlier draws when increasing the replicate
+count, although this version recomputes them rather than resuming a saved run.
+
+The implementation roadmap is in
+[BOOTSTRAP_UNCERTAINTY_PLAN.md](../BOOTSTRAP_UNCERTAINTY_PLAN.md).
+
 ## Bounds and units
 
 ```python
